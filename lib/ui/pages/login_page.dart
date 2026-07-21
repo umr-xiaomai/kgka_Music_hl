@@ -1106,6 +1106,19 @@ class _QrImage extends StatelessWidget {
           ),
         );
 
+    // 二维码的“白色”区域在 PNG 里通常是透明的。深色模式下，透明的“白”
+    // 区域会透出底层近黑的 surface，使二维码变成黑底黑码，手机无法识别。
+    // 因此这里始终垫一层纯白背景，保证高对比度，与主题无关。
+    Widget withWhiteBackground(Widget image) => Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: image,
+        );
+
     final uri = Uri.tryParse(imageUrl);
     if (uri == null) return fallback();
 
@@ -1114,21 +1127,25 @@ class _QrImage extends StatelessWidget {
     if (data != null) {
       final bytes = data.contentAsBytes();
       if (bytes.isEmpty) return fallback();
-      return Image.memory(
-        bytes,
+      return withWhiteBackground(
+        Image.memory(
+          bytes,
+          width: size,
+          height: size,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => fallback(),
+        ),
+      );
+    }
+
+    return withWhiteBackground(
+      Image.network(
+        imageUrl,
         width: size,
         height: size,
         fit: BoxFit.contain,
         errorBuilder: (_, __, ___) => fallback(),
-      );
-    }
-
-    return Image.network(
-      imageUrl,
-      width: size,
-      height: size,
-      fit: BoxFit.contain,
-      errorBuilder: (_, __, ___) => fallback(),
+      ),
     );
   }
 }

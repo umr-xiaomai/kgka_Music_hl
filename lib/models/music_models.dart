@@ -1642,10 +1642,11 @@ class QrCheckResult {
   final String? nickname;
   final String? avatar;
 
-  // 酷狗二维码状态码：0=等待扫码, 1=已扫码待确认, 2=已过期, 4=登录成功
-  bool get isWaitingForScan => status == 0;
-  bool get isWaitingForConfirm => status == 1;
-  bool get isExpired => status == 2;
+  // 酷狗概念版二维码状态码（参考 jsososo/kugou-concept、ImUpXuu/KuGouWebPlayer）：
+  //   0 = 已过期        1 = 等待扫码        2 = 已扫码待确认        4 = 登录成功
+  bool get isWaitingForScan => status == 1;
+  bool get isWaitingForConfirm => status == 2;
+  bool get isExpired => status == 0;
   bool get isSuccess => status == 4 && token != null && token!.isNotEmpty;
 
   factory QrCheckResult.fromJson(Map<String, dynamic> json) {
