@@ -261,8 +261,27 @@ class PlaylistSummary {
 
   bool get isLikedPlaylist => isDefault == 2 || title.trim() == '我喜欢';
 
-  bool get isCollectedAlbum =>
-      !isLikedPlaylist && (sourceGlobalId == null || sourceGlobalId!.isEmpty);
+  /// 收藏专辑：用户歌单列表里没有 `list_create_gid` 的专辑条目。
+  /// 注意：自建歌单也可能没有 `list_create_gid`，不能单靠 sourceGlobalId 为空判断。
+  bool get isCollectedAlbum {
+    if (isLikedPlaylist) {
+      return false;
+    }
+    // `/user/playlist` 条目：type 0=自建/默认歌单，1=收藏歌单，都不是专辑
+    if (type == 0 || type == 1) {
+      return false;
+    }
+    if (isDefault == 0 || isDefault == 1 || isDefault == 2) {
+      return false;
+    }
+    if (musiclibId != null && musiclibId!.isNotEmpty) {
+      return sourceGlobalId == null || sourceGlobalId!.isEmpty;
+    }
+    if (sourceGlobalId != null && sourceGlobalId!.isNotEmpty) {
+      return false;
+    }
+    return sourceListId != null && sourceListId!.isNotEmpty;
+  }
 
   String? get albumId {
     if (!isCollectedAlbum) {
@@ -278,7 +297,7 @@ class PlaylistSummary {
   }
 
   bool get isCreatedPlaylist {
-    if (isCollectedAlbum) {
+    if (isLikedPlaylist || isCollectedAlbum) {
       return false;
     }
     if (type == 0) {
@@ -295,9 +314,72 @@ class PlaylistSummary {
         currentUserId == creatorUserId;
   }
 
+  /// 可对歌单内歌曲做增删（自建 + 我喜欢）
+  bool get canEditTracks => isLikedPlaylist || isCreatedPlaylist;
+
   bool get hasCollectionSource {
     return (sourceGlobalId != null && sourceGlobalId!.isNotEmpty) ||
         (sourceListId != null && sourceListId!.isNotEmpty);
+  }
+
+  PlaylistSummary copyWith({
+    String? id,
+    String? title,
+    String? subtitle,
+    String? coverUrl,
+    int? songCount,
+    int? playCount,
+    int? isDefault,
+    String? creatorName,
+    String? creatorUserId,
+    String? currentUserId,
+    String? sourceGlobalId,
+    String? sourceListId,
+    int? type,
+    int? source,
+    String? listId,
+    String? musiclibId,
+  }) {
+    return PlaylistSummary(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      subtitle: subtitle ?? this.subtitle,
+      coverUrl: coverUrl ?? this.coverUrl,
+      songCount: songCount ?? this.songCount,
+      playCount: playCount ?? this.playCount,
+      isDefault: isDefault ?? this.isDefault,
+      creatorName: creatorName ?? this.creatorName,
+      creatorUserId: creatorUserId ?? this.creatorUserId,
+      currentUserId: currentUserId ?? this.currentUserId,
+      sourceGlobalId: sourceGlobalId ?? this.sourceGlobalId,
+      sourceListId: sourceListId ?? this.sourceListId,
+      type: type ?? this.type,
+      source: source ?? this.source,
+      listId: listId ?? this.listId,
+      musiclibId: musiclibId ?? this.musiclibId,
+    );
+  }
+
+  /// 用详情接口数据补全展示字段，同时保留库列表里的编辑元数据。
+  PlaylistSummary mergeWithDetail(PlaylistSummary detail) {
+    return copyWith(
+      id: detail.id.isNotEmpty ? detail.id : null,
+      title: detail.title,
+      subtitle: detail.subtitle ?? subtitle,
+      coverUrl: detail.coverUrl ?? coverUrl,
+      songCount: detail.songCount ?? songCount,
+      playCount: detail.playCount ?? playCount,
+      isDefault: detail.isDefault ?? isDefault,
+      creatorName: detail.creatorName ?? creatorName,
+      creatorUserId: detail.creatorUserId ?? creatorUserId,
+      currentUserId: detail.currentUserId ?? currentUserId,
+      sourceGlobalId: detail.sourceGlobalId ?? sourceGlobalId,
+      sourceListId: detail.sourceListId ?? sourceListId,
+      type: detail.type ?? type,
+      source: detail.source ?? source,
+      listId: detail.listId ?? listId,
+      musiclibId: detail.musiclibId ?? musiclibId,
+    );
   }
 
   factory PlaylistSummary.fromRecommend(Map<String, dynamic> json) {
@@ -357,10 +439,17 @@ class PlaylistSummary {
       coverUrl: normalizeImageUrl(asString(json['pic'])),
       songCount: asInt(json['count']),
       playCount: asInt(json['heat']),
+      isDefault: asInt(json['is_def']) ?? asInt(json['is_default']),
       creatorName: asString(json['list_create_username']),
       creatorUserId: asString(json['list_create_userid']),
-      sourceGlobalId: asString(json['list_create_gid']),
+      sourceGlobalId:
+          asString(json['global_collection_id']) ??
+          asString(json['list_create_gid']),
       sourceListId: asString(json['list_create_listid']),
+      type: asInt(json['type']),
+      source: asInt(json['source']),
+      listId: asString(json['listid']),
+      musiclibId: asString(json['musiclib_id']),
     );
   }
 

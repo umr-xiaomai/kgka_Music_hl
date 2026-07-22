@@ -64,29 +64,132 @@ class AuthController extends ChangeNotifier {
         await _api.addToPlaylist(targetListId, song);
         _likedHashes.add(song.hash);
       }
+      await _persistLikedHashes();
       notifyListeners();
-    } catch (_) {}
+    } catch (error) {
+      // Revert on failure
+      if (liked) {
+        _likedHashes.add(song.hash);
+      } else {
+        _likedHashes.remove(song.hash);
+      }
+      rethrow;
+    }
   }
 
-  Playlist? get likedPlaylist => playlists
-      .whereType<Playlist>()
-      .where((p) => p.isLikedPlaylist)
-      .firstOrNull;
+  PlaylistSummary? get likedPlaylist {
+    for (final playlist in playlists) {
+      if (playlist.isLikedPlaylist) {
+        return playlist;
+      }
+    }
+    return null;
+  }
 
-  Future<void> refreshProfile({bool silent = false}) async {
-    if (!silent) {
-      isLoading = true;
-      notifyListeners();
+  List<PlaylistSummary> get createdPlaylists {
+    return playlists
+        .where(
+          (playlist) =>
+              !playlist.isCollectedAlbum && playlist.isCreatedPlaylist,
+        )
+        .toList();
+  }
+
+  List<PlaylistSummary> get collectedPlaylists {
+    return playlists
+        .where(
+          (playlist) =>
+              !playlist.isLikedPlaylist &&
+              !playlist.isCollectedAlbum &&
+              !playlist.isCreatedPlaylist,
+        )
+        .toList();
+  }
+
+  List<PlaylistSummary> get collectedAlbums {
+    return playlists.where((playlist) => playlist.isCollectedAlbum).toList();
+  }
+
+  PlaylistSummary? findUserPlaylist(PlaylistSummary playlist) {
+    for (final item in playlists) {
+      if (item.id == playlist.id ||
+          (playlist.listId != null && item.listId == playlist.listId) ||
+          (item.sourceGlobalId != null && item.sourceGlobalId == playlist.id) ||
+          (playlist.sourceGlobalId != null &&
+              item.sourceGlobalId == playlist.sourceGlobalId)) {
+        return item;
+      }
     }
-    try {
-      final result = await _api.userDetail();
-      profile = result;
-      await _cacheService.write(_userCacheKey, UserProfile.toCache(result));
-    } catch (_) {}
-    if (!silent) {
-      isLoading = false;
-      notifyListeners();
-    }
+    return null;
+  }
+
+  bool isPlaylistInLibrary(PlaylistSummary playlist) {
+    return findUserPlaylist(playlist) != null;
+  }
+
+  bool canEditPlaylist(PlaylistSummary playlist) {
+    final item = findUserPlaylist(playlist) ?? playlist;
+    return item.canEditTracks;
+  }
+
+  Future<void> createPlaylist(String name, {bool private = false}) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    await _run(() async {
+      await _api.createPlaylist(trimmed, private: private);
+      playlists = await _loadUserPlaylistsWithCache();
+    });
+  }
+
+  Future<void> collectPlaylist(PlaylistSummary playlist) async {
+    await _run(() async {
+      await _api.collectPlaylist(
+        name: playlist.title,
+        globalCollectionId: playlist.id,
+      );
+      playlists = await _loadUserPlaylistsWithCache();
+    });
+  }
+
+  Future<void> deleteOrUncollectPlaylist(PlaylistSummary playlist) async {
+    final target = findUserPlaylist(playlist) ?? playlist;
+    final listId = _playlistListId(target);
+    if (listId == null) return;
+    await _run(() async {
+      await _api.deletePlaylist(listId);
+      playlists = await _loadUserPlaylistsWithCache();
+      await _syncLikedSongs();
+    });
+  }
+
+  Future<void> addSongToPlaylist(PlaylistSummary playlist, Song song) async {
+    final listId = _playlistListId(playlist);
+    if (listId == null) return;
+    await _run(() async {
+      await _api.addToPlaylist(listId, song);
+      playlists = await _loadUserPlaylistsWithCache();
+      if (playlist.isLikedPlaylist) {
+        _likedHashes.add(song.hash);
+        await _persistLikedHashes();
+      }
+    });
+  }
+
+  Future<void> removeSongFromPlaylist(
+    PlaylistSummary playlist,
+    Song song,
+  ) async {
+    final target = findUserPlaylist(playlist) ?? playlist;
+    final listId = _playlistListId(target);
+    if (listId == null) return;
+    await _run(() async {
+      await _api.removeFromPlaylist(listId, song);
+      playlists = await _loadUserPlaylistsWithCache();
+      if (target.isLikedPlaylist) {
+        _likedHashes.remove(song.hash);
+        await _persistLikedHashes();
+      }
+    });
   }
 
   Future<void> restore() async {
@@ -149,94 +252,325 @@ class AuthController extends ChangeNotifier {
     }
   }
 
-  Future<void> login(String mobile, String code) async {
-    isLoading = true;
-    errorMessage = null;
-    notifyListeners();
+  String? _playlistListId(PlaylistSummary playlist) {
+    if (playlist.listId?.isNotEmpty == true) {
+      return playlist.listId;
+    }
+    if (playlist.id.isNotEmpty) {
+      return playlist.id;
+    }
+    return null;
+  }
+
+  Future<void> refreshSession() async {
+    if (session == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    final storedUserId = prefs.getString(_userIdKey);
     try {
-      final session = await _api.login(mobile, code);
-      if (session.userId == null || session.token == null) {
-        errorMessage = '登录失败，请检查验证码';
+      final refreshed = await _api.refreshToken();
+      if (storedUserId != null &&
+          refreshed.userId != null &&
+          storedUserId != refreshed.userId) {
+        await _clearSession();
         return;
       }
-      this.session = session;
-      _api.setSession(session);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_tokenKey, session.token ?? '');
-      await prefs.setString(_t1Key, session.t1 ?? '');
-      await prefs.setString(_userIdKey, session.userId ?? '');
-      await refreshProfile(silent: true);
-      _vipBackgroundTask.schedule(session);
-    } catch (e) {
-      errorMessage = e.toString();
-    } finally {
-      isLoading = false;
-      notifyListeners();
+      session = refreshed;
+      _api.setSession(refreshed);
+      await prefs.setString(_tokenKey, refreshed.token ?? '');
+      await prefs.setString(_t1Key, refreshed.t1 ?? '');
+      await prefs.setString(_userIdKey, refreshed.userId ?? '');
+    } catch (_) {
+      // Refresh failed, continue with existing session
     }
   }
 
-  Future<void> loginWithSession(Map<String, dynamic> sessionData) async {
-    isLoading = true;
-    errorMessage = null;
-    notifyListeners();
-    try {
-      final session = LoginSession.fromJson(sessionData);
+  Future<void> sendCode(String mobile) async {
+    await _run(() => _api.sendLoginCode(mobile));
+  }
+
+  Future<void> loginWithSession(LoginSession session) async {
+    await _run(() async {
       this.session = session;
       _api.setSession(session);
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_tokenKey, session.token ?? '');
       await prefs.setString(_t1Key, session.t1 ?? '');
+      // session.sessionId 可能为 null（扫码登录），但 ApiClient 内部
+      // 已从登录响应 header 保存了后端的 session key，这里也持久化一份。
+      await prefs.setString(_sessionIdKey, _api.clientSessionId ?? '');
       await prefs.setString(_userIdKey, session.userId ?? '');
+
+      // 扫码登录返回的 QrLoginStatusResponse 只有 token，缺少 t1。
+      // 后续 /user/detail 等接口需要 t1 header 鉴权，否则会失败导致
+      // profile/歌单拉取不到。这里先调 /login/token 刷新拿到 t1。
+      if (session.t1 == null || session.t1!.isEmpty) {
+        try {
+          final refreshed = await _api.refreshToken();
+          if (refreshed.token != null && refreshed.token!.isNotEmpty) {
+            // 合并：保留扫码返回的 nickname/avatar，用刷新结果的 token/t1
+            session = LoginSession(
+              userId: refreshed.userId ?? session.userId,
+              token: refreshed.token,
+              t1: refreshed.t1,
+              sessionId: _api.clientSessionId,
+              nickname: session.nickname,
+              avatarUrl: session.avatarUrl,
+            );
+            this.session = session;
+            _api.setSession(session);
+            await prefs.setString(_tokenKey, session.token ?? '');
+            await prefs.setString(_t1Key, session.t1 ?? '');
+            await prefs.setString(_sessionIdKey, _api.clientSessionId ?? '');
+            await prefs.setString(_userIdKey, session.userId ?? '');
+          }
+        } catch (_) {
+          // 刷新失败，继续用原 token
+        }
+      }
+
+      // 用 session 数据构造临时 profile，UI 立即展示用户信息；
+      // refreshProfile 成功后会覆盖为完整数据。
+      if (session.nickname != null && session.nickname!.isNotEmpty) {
+        profile = UserProfile(
+          nickname: session.nickname!,
+          avatarUrl: session.avatarUrl,
+        );
+      }
+
       await refreshProfile(silent: true);
       _vipBackgroundTask.schedule(session);
-    } catch (e) {
-      errorMessage = e.toString();
-    } finally {
-      isLoading = false;
-      notifyListeners();
-    }
+    });
+  }
+
+  Future<PhoneLoginResult?> login(
+    String mobile,
+    String code, {
+    String? userId,
+  }) async {
+    PhoneLoginResult? result;
+    await _run(() async {
+      _api.setSession(null);
+      result = await _api.loginWithPhone(
+        mobile: mobile,
+        code: code,
+        userId: userId,
+      );
+      if (result?.requiresUserSelection == true) {
+        return;
+      }
+      final nextSession = result!.session!;
+      session = nextSession;
+      _api.setSession(nextSession);
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_tokenKey, nextSession.token ?? '');
+      await prefs.setString(_t1Key, nextSession.t1 ?? '');
+      // nextSession.sessionId 可能为 null，用 ApiClient 实际持有的 session key
+      await prefs.setString(_sessionIdKey, _api.clientSessionId ?? '');
+      await prefs.setString(_userIdKey, nextSession.userId ?? '');
+
+      await refreshProfile(silent: true);
+      _vipBackgroundTask.schedule(session);
+    });
+    return result;
+  }
+
+  Future<void> refreshProfile({bool silent = false}) async {
+    await _run(() async {
+      profile = await _api.userDetail();
+      if (profile != null) {
+        await _cacheService.write(_userCacheKey, profile!.toCache());
+      }
+      playlists = await _loadUserPlaylistsWithCache();
+      await _syncLikedSongs();
+    }, silent: silent);
   }
 
   Future<void> logout() async {
-    await _clearSession();
-    session = null;
-    profile = null;
-    playlists = const [];
-    _likedHashes.clear();
-    notifyListeners();
-  }
-
-  Future<void> _clearSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_tokenKey);
-    await prefs.remove(_t1Key);
-    await prefs.remove(_sessionIdKey);
-    await prefs.remove(_userIdKey);
-    _api.setSession(null);
-  }
-
-  Future<List<PlaylistSummary>> _loadCachedPlaylists() async {
-    final prefs = await SharedPreferences.getInstance();
-    final keys = prefs.getKeys().where((k) => k.startsWith(_playlistCachePrefix));
-    final playlists = <PlaylistSummary>[];
-    for (final key in keys) {
-      final json = prefs.getString(key);
-      if (json != null) {
-        try {
-          playlists.add(PlaylistSummary.fromJson(jsonDecode(json)));
-        } catch (_) {}
+    await _run(() async {
+      try {
+        await _api.logout();
+      } finally {
+        final prefs = await SharedPreferences.getInstance();
+        final cacheKey = _playlistCacheKey;
+        final emptyCountKey = _playlistEmptyCountKey;
+        session = null;
+        profile = null;
+        playlists = const [];
+        _likedHashes.clear();
+        _api.setSession(null);
+        await prefs.remove(_tokenKey);
+        await prefs.remove(_t1Key);
+        await prefs.remove(_sessionIdKey);
+        await prefs.remove(_userIdKey);
+        await prefs.remove(cacheKey);
+        await prefs.remove(emptyCountKey);
+        await prefs.remove(_likedHashesKey);
+        await _clearSession();
       }
+    });
+  }
+
+  Future<void> _syncLikedSongs() async {
+    final playlist = likedPlaylist;
+    if (playlist == null) return;
+
+    try {
+      final songs = await _api.playlistSongs(playlist.id, fetchAll: true);
+      _likedHashes.clear();
+      for (final song in songs) {
+        _likedHashes.add(song.hash);
+      }
+      await _persistLikedHashes();
+    } catch (_) {
+      await _loadLikedHashes();
     }
-    return playlists;
+  }
+
+  Future<void> _persistLikedHashes() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_likedHashesKey, jsonEncode(_likedHashes.toList()));
   }
 
   Future<void> _loadLikedHashes() async {
     final prefs = await SharedPreferences.getInstance();
-    final hashes = prefs.getStringList(_likedHashesKey);
-    if (hashes != null) {
-      _likedHashes.addAll(hashes);
+    final raw = prefs.getString(_likedHashesKey);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw);
+      if (list is List) {
+        _likedHashes.addAll(list.whereType<String>());
+      }
+    } catch (_) {}
+  }
+
+  Future<List<PlaylistSummary>> _loadUserPlaylistsWithCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final fetched = await _api.userPlaylists(pageSize: 100);
+
+    if (fetched.isNotEmpty) {
+      await prefs.setInt(_playlistEmptyCountKey, 0);
+      await _saveCachedPlaylists(fetched);
+      return fetched;
+    }
+
+    final emptyCount = (prefs.getInt(_playlistEmptyCountKey) ?? 0) + 1;
+    await prefs.setInt(_playlistEmptyCountKey, emptyCount);
+
+    final cached = await _loadCachedPlaylists();
+    if (cached.isNotEmpty && emptyCount < 2) {
+      return cached;
+    }
+
+    // 清理旧 key 与 CacheService 索引
+    await prefs.remove(_playlistCacheKey);
+    await _cacheService.remove(_playlistCacheKeyV2);
+    return const [];
+  }
+
+  Future<List<PlaylistSummary>> _loadCachedPlaylists() async {
+    // 优先读 CacheService（统一管理），回退旧 key（兼容旧版本）
+    final cached = await _cacheService.read<List<PlaylistSummary>>(
+      _playlistCacheKeyV2,
+      decode: (json) => (json['playlists'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(PlaylistSummary.fromCache)
+          .where((playlist) => playlist.id.isNotEmpty)
+          .toList(),
+      ttl: AppConfig.userProfileTtl,
+    );
+    if (cached != null) {
+      return cached.data;
+    }
+    // 回退旧 key
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_playlistCacheKey);
+    if (raw == null || raw.isEmpty) {
+      return const [];
+    }
+    try {
+      final json = jsonDecode(raw);
+      if (json is! List) {
+        return const [];
+      }
+      return json
+          .whereType<Map>()
+          .map((item) => PlaylistSummary.fromCache(asMap(item)))
+          .where((playlist) => playlist.id.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return const [];
     }
   }
 
-  static const _userCacheKey = 'cache_user_profile';
+  Future<void> _saveCachedPlaylists(List<PlaylistSummary> playlists) async {
+    // 双写：CacheService（统一管理）+ 旧 key（兼容）
+    await _cacheService.write(_playlistCacheKeyV2, {
+      'playlists': playlists.map((p) => p.toCache()).toList(),
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _playlistCacheKey,
+      jsonEncode(playlists.map((playlist) => playlist.toCache()).toList()),
+    );
+  }
+
+  String get _playlistCacheKey {
+    return '${_playlistCachePrefix}_${session?.userId ?? 'default'}';
+  }
+
+  String get _playlistEmptyCountKey {
+    return '${_playlistEmptyCountPrefix}_${session?.userId ?? 'default'}';
+  }
+
+  String get _userCacheKey => 'cache_user_${session?.userId ?? 'default'}';
+
+  String get _playlistCacheKeyV2 =>
+      'cache_user_playlists_${session?.userId ?? 'default'}';
+
+  Future<void> _clearSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    session = null;
+    profile = null;
+    playlists = const [];
+    _likedHashes.clear();
+    _api.setSession(null);
+    await prefs.remove(_tokenKey);
+    await prefs.remove(_t1Key);
+    await prefs.remove(_userIdKey);
+    await prefs.remove(_playlistCacheKey);
+    await prefs.remove(_playlistEmptyCountKey);
+    await prefs.remove(_likedHashesKey);
+    await _cacheService.clearUserCache(null);
+    notifyListeners();
+  }
+
+  Future<void> _run(
+    Future<void> Function() action, {
+    bool silent = false,
+  }) async {
+    if (!silent) {
+      isLoading = true;
+      errorMessage = null;
+      notifyListeners();
+    }
+
+    try {
+      await action();
+      errorMessage = null;
+    } catch (error) {
+      errorMessage = _errorText(error);
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  String _errorText(Object error) {
+    if (error is ApiException) {
+      return error.message;
+    }
+    return error.toString();
+  }
 }

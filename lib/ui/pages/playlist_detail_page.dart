@@ -303,7 +303,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       final infoJson = cacheData['info'];
       setState(() {
         if (infoJson is Map<String, dynamic>) {
-          _info = PlaylistSummary.fromCache(infoJson);
+          final library = widget.auth.findUserPlaylist(widget.playlist) ??
+              widget.playlist;
+          _info = library.mergeWithDetail(PlaylistSummary.fromCache(infoJson));
         }
         _songs.clear();
         _songs.addAll((cacheData['songs'] as List? ?? const [])
@@ -358,7 +360,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         final songPage = results[1] as SongPage;
         final songs = songPage.songs;
         setState(() {
-          _info = info;
+          // 详情接口可能缺 type/listId；与入口/库内元数据合并，保证 canEdit 正确
+          final library = widget.auth.findUserPlaylist(widget.playlist) ??
+              widget.playlist;
+          _info = library.mergeWithDetail(info);
           final songs = songPage.songs;
           // 增量替换：仅当网络数据与当前列表不同时才更新，
           // 避免缓存已显示后网络刷新触发 clear+addAll 导致滚动位置重置。
@@ -462,7 +467,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   bool get _isInLibrary => widget.auth.isPlaylistInLibrary(_currentPlaylist);
 
-  bool get _canEdit => widget.auth.canEditPlaylist(_currentPlaylist);
+  /// 优先用库列表里的歌单元数据判断，避免详情接口字段不全导致无法删歌。
+  bool get _canEdit => widget.auth.canEditPlaylist(_libraryPlaylist);
 
   Future<void> _collectPlaylist() async {
     if (_isAlbum) return;
