@@ -119,11 +119,13 @@ class _AppShellState extends State<AppShell>
           // 2) ClipRect 跟随 SlideTransition 移动，裁剪边界 = 移动后的
           //    播放页边界，关闭时放大溢出的模糊封面被裁掉，不再盖在底层
           //    首页上造成"模糊遮罩"。
-          child: ClipRect(
-            child: PlayerPage(
-              player: widget.player,
-              auth: widget.auth,
-              onClose: _closePlayer,
+          child: RepaintBoundary(
+            child: ClipRect(
+              child: PlayerPage(
+                player: widget.player,
+                auth: widget.auth,
+                onClose: _closePlayer,
+              ),
             ),
           ),
         ),
@@ -704,8 +706,9 @@ class _LiquidGlassBottomBar extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
 
-    return Align(
-      alignment: Alignment.bottomCenter,
+    return RepaintBoundary(
+      child: Align(
+        alignment: Alignment.bottomCenter,
       child: Padding(
         padding: EdgeInsets.fromLTRB(
           28,
@@ -799,6 +802,7 @@ class _LiquidGlassBottomBar extends StatelessWidget {
           ),
         ),
       ),
+    ),
     );
   }
 }
@@ -818,8 +822,9 @@ class _CenterPlayerDisc extends StatefulWidget {
 }
 
 class _CenterPlayerDiscState extends State<_CenterPlayerDisc>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _rotationController;
+  bool _appInBackground = false;
 
   @override
   void initState() {
@@ -828,6 +833,13 @@ class _CenterPlayerDiscState extends State<_CenterPlayerDisc>
       vsync: this,
       duration: const Duration(seconds: 24),
     );
+    WidgetsBinding.instance.addObserver(this);
+    _syncRotation();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appInBackground = state != AppLifecycleState.resumed;
     _syncRotation();
   }
 
@@ -839,12 +851,13 @@ class _CenterPlayerDiscState extends State<_CenterPlayerDisc>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _rotationController.dispose();
     super.dispose();
   }
 
   void _syncRotation() {
-    if (widget.player.isPlaying) {
+    if (widget.player.isPlaying && !_appInBackground) {
       if (!_rotationController.isAnimating) {
         _rotationController.repeat();
       }
@@ -868,101 +881,105 @@ class _CenterPlayerDiscState extends State<_CenterPlayerDisc>
         final progress = (durationMs > 0 ? (positionMs / durationMs) : 0.0)
             .clamp(0.0, 1.0);
 
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: widget.onOpenPlayer,
-          onLongPress: () {
-            if (hasSong) {
-              HapticFeedback.lightImpact();
-              widget.player.togglePlay();
-            }
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: SizedBox.square(
-              dimension: 46,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  // 1. 外圈环形播放进度条（仅显示已播放进度弧线）
-                  SizedBox.square(
-                    dimension: 46,
-                    child: CircularProgressIndicator(
-                      value: hasSong ? progress : 0.0,
-                      strokeWidth: 2.2,
-                      strokeCap: StrokeCap.round,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        colorScheme.primary,
-                      ),
-                      backgroundColor: Colors.transparent,
-                    ),
-                  ),
-                  // 2. 内部黑胶唱片/专辑封面
-                  Container(
-                    width: 38,
-                    height: 38,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: .20),
-                          blurRadius: 6,
-                          offset: const Offset(0, 2),
+        return RepaintBoundary(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onOpenPlayer,
+            onLongPress: () {
+              if (hasSong) {
+                HapticFeedback.lightImpact();
+                widget.player.togglePlay();
+              }
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: SizedBox.square(
+                dimension: 46,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // 1. 外圈环形播放进度条（仅显示已播放进度弧线）
+                    SizedBox.square(
+                      dimension: 46,
+                      child: CircularProgressIndicator(
+                        value: hasSong ? progress : 0.0,
+                        strokeWidth: 2.2,
+                        strokeCap: StrokeCap.round,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          colorScheme.primary,
                         ),
-                      ],
+                        backgroundColor: Colors.transparent,
+                      ),
                     ),
-                    child: ClipOval(
-                      child: hasSong
-                          ? RotationTransition(
-                              turns: _rotationController,
-                              child: Stack(
-                                alignment: Alignment.center,
-                                children: [
-                                  Artwork(
-                                    url: song.coverUrl,
-                                    size: 38,
-                                    borderRadius: 38,
-                                  ),
-                                  // 唱片同心圆边缘纹理
-                                  DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: Colors.white.withValues(alpha: .25),
-                                        width: 0.8,
+                    // 2. 内部黑胶唱片/专辑封面
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: .20),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: ClipOval(
+                        child: hasSong
+                            ? RepaintBoundary(
+                                child: RotationTransition(
+                                  turns: _rotationController,
+                                  child: Stack(
+                                    alignment: Alignment.center,
+                                    children: [
+                                      Artwork(
+                                        url: song.coverUrl,
+                                        size: 38,
+                                        borderRadius: 38,
                                       ),
-                                    ),
-                                    child: const SizedBox.expand(),
-                                  ),
-                                  // 中心轴孔微光
-                                  Center(
-                                    child: Container(
-                                      width: 6,
-                                      height: 6,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: colorScheme.surface,
-                                        border: Border.all(
-                                          color: Colors.black.withValues(alpha: .35),
-                                          width: 0.8,
+                                      // 唱片同心圆边缘纹理
+                                      DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: Colors.white.withValues(alpha: .25),
+                                            width: 0.8,
+                                          ),
+                                        ),
+                                        child: const SizedBox.expand(),
+                                      ),
+                                      // 中心轴孔微光
+                                      Center(
+                                        child: Container(
+                                          width: 6,
+                                          height: 6,
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF0F131A),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: Colors.black.withValues(alpha: .35),
+                                              width: 0.8,
+                                            ),
+                                          ),
                                         ),
                                       ),
-                                    ),
+                                    ],
                                   ),
-                                ],
+                                ),
+                              )
+                            : Container(
+                                color: colorScheme.primaryContainer,
+                                child: Icon(
+                                  Icons.music_note_rounded,
+                                  size: 20,
+                                  color: colorScheme.primary,
+                                ),
                               ),
-                            )
-                          : Container(
-                              color: colorScheme.primaryContainer,
-                              child: Icon(
-                                Icons.music_note_rounded,
-                                size: 20,
-                                color: colorScheme.primary,
-                              ),
-                            ),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

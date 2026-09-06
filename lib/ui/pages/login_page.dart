@@ -21,7 +21,7 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
   final _mobileController = TextEditingController();
   final _codeController = TextEditingController();
   final _mobileFocus = FocusNode();
@@ -40,7 +40,27 @@ class _LoginPageState extends State<LoginPage> {
   Timer? _qrPollTimer;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      if (_codeFocus.hasFocus) {
+        _codeFocus.unfocus();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _codeFocus.requestFocus();
+        });
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _codeTimer?.cancel();
     _qrPollTimer?.cancel();
     _mobileController.dispose();
@@ -841,56 +861,36 @@ class _LoginTextField extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: enabled ? focusNode.requestFocus : null,
-                  child: Stack(
-                    alignment: Alignment.centerLeft,
-                    children: [
-                      ValueListenableBuilder<TextEditingValue>(
-                        valueListenable: controller,
-                        builder: (context, value, _) {
-                          if (value.text.isNotEmpty) {
-                            return const SizedBox.shrink();
-                          }
-
-                          return IgnorePointer(
-                            child: Text(
-                              hintText,
-                              style: TextStyle(
-                                color: colorScheme.onSurfaceVariant,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 16,
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                      EditableText(
-                        controller: controller,
-                        focusNode: focusNode,
-                        autofillHints: autofillHints,
-                        keyboardType: keyboardType,
-                        textInputAction: textInputAction,
-                        readOnly: !enabled,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                          LengthLimitingTextInputFormatter(maxLength),
-                        ],
-                        cursorColor: colorScheme.primary,
-                        backgroundCursorColor: colorScheme.outline,
-                        selectionColor: colorScheme.primary.withValues(
-                          alpha: .22,
-                        ),
-                        style: TextStyle(
-                          color: colorScheme.onSurface,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 16,
-                        ),
-                        onSubmitted: onSubmitted,
-                      ),
-                    ],
+                child: TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  enabled: enabled,
+                  autofillHints: autofillHints,
+                  keyboardType: keyboardType,
+                  textInputAction: textInputAction,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(maxLength),
+                  ],
+                  cursorColor: colorScheme.primary,
+                  style: TextStyle(
+                    color: colorScheme.onSurface,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
                   ),
+                  decoration: InputDecoration(
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: EdgeInsets.zero,
+                    hintText: hintText,
+                    hintStyle: TextStyle(
+                      color: colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                    ),
+                    counterText: '',
+                  ),
+                  onSubmitted: onSubmitted,
                 ),
               ),
             ],

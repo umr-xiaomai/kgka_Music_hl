@@ -530,30 +530,62 @@ class _UserProfileHeader extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
       child: Row(
         children: [
-          Container(
-            width: 54,
-            height: 54,
-            clipBehavior: Clip.antiAlias,
-            decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest,
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: isDark
-                    ? Colors.white.withValues(alpha: .24)
-                    : Colors.white.withValues(alpha: .95),
-                width: 2.0,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: isDark ? .35 : .08),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
+          SizedBox.square(
+            dimension: 54,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: isDark ? .35 : .08),
+                        blurRadius: 10,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                ),
+                ClipOval(
+                  child: profile?.avatarUrl == null || profile!.avatarUrl!.isEmpty
+                      ? Center(
+                          child: Icon(
+                            Icons.person_rounded,
+                            color: colorScheme.primary,
+                            size: 30,
+                          ),
+                        )
+                      : Image.network(
+                          profile.avatarUrl!,
+                          width: 54,
+                          height: 54,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => Center(
+                            child: Icon(
+                              Icons.person_rounded,
+                              color: colorScheme.primary,
+                              size: 30,
+                            ),
+                          ),
+                        ),
+                ),
+                IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: isDark
+                            ? Colors.white.withValues(alpha: .24)
+                            : Colors.white.withValues(alpha: .95),
+                        width: 1.8,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
-            child: profile?.avatarUrl == null
-                ? Icon(Icons.person_rounded, color: colorScheme.primary, size: 30)
-                : Image.network(profile!.avatarUrl!, fit: BoxFit.cover),
           ),
           const SizedBox(width: 14),
           Expanded(

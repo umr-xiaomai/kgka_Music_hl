@@ -31,49 +31,55 @@ class LiquidGlassBackground extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (showOrbs) ...[
-            // 顶部主题色柔和极光光晕（全屏平滑衰减，无硬边）
-            Positioned(
-              top: -160,
-              left: -80,
-              right: -80,
-              height: 480,
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: RadialGradient(
-                      center: const Alignment(0, -0.6),
-                      radius: 0.9,
-                      colors: [
-                        primaryOrbColor,
-                        primaryOrbColor.withValues(alpha: 0.0),
-                      ],
+          if (showOrbs)
+            RepaintBoundary(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // 顶部主题色柔和极光光晕（全屏平滑衰减，无硬边）
+                  Positioned(
+                    top: -160,
+                    left: -80,
+                    right: -80,
+                    height: 480,
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: RadialGradient(
+                            center: const Alignment(0, -0.6),
+                            radius: 0.9,
+                            colors: [
+                              primaryOrbColor,
+                              primaryOrbColor.withValues(alpha: 0.0),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
-            ),
-            // 中下部副色微光（全屏平滑衰减）
-            Positioned(
-              bottom: -100,
-              right: -100,
-              width: 400,
-              height: 400,
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [
-                        secondaryOrbColor,
-                        secondaryOrbColor.withValues(alpha: 0.0),
-                      ],
+                  // 中下部副色微光（全屏平滑衰减）
+                  Positioned(
+                    bottom: -100,
+                    right: -100,
+                    width: 400,
+                    height: 400,
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(
+                            colors: [
+                              secondaryOrbColor,
+                              secondaryOrbColor.withValues(alpha: 0.0),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                ],
               ),
             ),
-          ],
           child,
         ],
       ),
@@ -97,7 +103,7 @@ class LiquidGlassCard extends StatefulWidget {
     this.enableTouchFlex = true,
     this.backgroundColor,
     this.borderColor,
-    this.blurSigma = 14.0,
+    this.blurSigma = 0.0,
   });
 
   final Widget child;
@@ -172,6 +178,21 @@ class _LiquidGlassCardState extends State<LiquidGlassCard> {
       );
     }
 
+    final hasBlur = widget.blurSigma > 0;
+    final cardDecoration = BoxDecoration(
+      color: effectiveBgColor,
+      borderRadius: BorderRadius.circular(widget.borderRadius),
+      border: Border.all(
+        color: effectiveBorderColor,
+        width: 1.1,
+      ),
+    );
+
+    final Widget innerContent = DecoratedBox(
+      decoration: cardDecoration,
+      child: cardBody,
+    );
+
     Widget glass = Container(
       margin: widget.margin,
       decoration: BoxDecoration(
@@ -186,26 +207,18 @@ class _LiquidGlassCardState extends State<LiquidGlassCard> {
           ),
         ],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(widget.borderRadius),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(
-            sigmaX: widget.blurSigma,
-            sigmaY: widget.blurSigma,
-          ),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: effectiveBgColor,
+      child: hasBlur
+          ? ClipRRect(
               borderRadius: BorderRadius.circular(widget.borderRadius),
-              border: Border.all(
-                color: effectiveBorderColor,
-                width: 1.1,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(
+                  sigmaX: widget.blurSigma,
+                  sigmaY: widget.blurSigma,
+                ),
+                child: innerContent,
               ),
-            ),
-            child: cardBody,
-          ),
-        ),
-      ),
+            )
+          : innerContent,
     );
 
     if (widget.enableTouchFlex && widget.onTap != null) {
@@ -237,6 +250,7 @@ class LiquidGlassCapsule extends StatefulWidget {
     this.onTap,
     this.isActive = false,
     this.activeColor,
+    this.blurSigma = 0.0,
   });
 
   final Widget child;
@@ -245,6 +259,7 @@ class LiquidGlassCapsule extends StatefulWidget {
   final VoidCallback? onTap;
   final bool isActive;
   final Color? activeColor;
+  final double blurSigma;
 
   @override
   State<LiquidGlassCapsule> createState() => _LiquidGlassCapsuleState();
@@ -289,6 +304,21 @@ class _LiquidGlassCapsuleState extends State<LiquidGlassCapsule> {
       );
     }
 
+    final hasBlur = widget.blurSigma > 0;
+    final capsuleDecoration = BoxDecoration(
+      color: effectiveBgColor,
+      borderRadius: BorderRadius.circular(100),
+      border: Border.all(
+        color: effectiveBorderColor,
+        width: widget.isActive ? 1.4 : 1.0,
+      ),
+    );
+
+    final Widget innerContent = DecoratedBox(
+      decoration: capsuleDecoration,
+      child: content,
+    );
+
     Widget capsule = Container(
       margin: widget.margin,
       decoration: BoxDecoration(
@@ -303,23 +333,18 @@ class _LiquidGlassCapsuleState extends State<LiquidGlassCapsule> {
           ),
         ],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(100),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: effectiveBgColor,
+      child: hasBlur
+          ? ClipRRect(
               borderRadius: BorderRadius.circular(100),
-              border: Border.all(
-                color: effectiveBorderColor,
-                width: widget.isActive ? 1.4 : 1.0,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(
+                  sigmaX: widget.blurSigma,
+                  sigmaY: widget.blurSigma,
+                ),
+                child: innerContent,
               ),
-            ),
-            child: content,
-          ),
-        ),
-      ),
+            )
+          : innerContent,
     );
 
     if (widget.onTap != null) {

@@ -24,6 +24,7 @@ import '../widgets/playback_speed_sheet.dart';
 import '../widgets/sleep_timer_sheet.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
+import '../widgets/marquee_text.dart';
 import '../widgets/clickable_artist_text.dart';
 import 'comment_page.dart';
 import 'desktop_lyrics_settings_page.dart';
@@ -111,11 +112,18 @@ class _PlayerPageState extends State<PlayerPage> {
                 return ListTile(
                   selected: active,
                   leading: Artwork(url: song.coverUrl, size: 44),
-                  title: Text(
-                    song.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  title: active
+                      ? MarqueeText(
+                          text: song.title,
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                        )
+                      : Text(
+                          song.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                   subtitle: Text(
                     song.artist,
                     maxLines: 1,
@@ -376,20 +384,32 @@ class _ArtworkBackground extends StatefulWidget {
 }
 
 class _ArtworkBackgroundState extends State<_ArtworkBackground>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _rotationController;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _rotationController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 40), // 40 seconds for a full rotation
+      duration: const Duration(seconds: 40),
     )..repeat();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      if (!_rotationController.isAnimating) _rotationController.repeat();
+    } else {
+      if (_rotationController.isAnimating) _rotationController.stop();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _rotationController.dispose();
     super.dispose();
   }
@@ -399,7 +419,7 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
     final coverUrl = widget.song.coverUrl;
     final size = MediaQuery.sizeOf(context);
     final maxDim = math.max(size.width, size.height);
-    final squareSize = maxDim * 1.5;
+    final bgDim = maxDim.clamp(300.0, 900.0);
 
     // 旋转动画背景是纯装饰性的，排除语义树防止 Windows AXTree 竞态崩溃
     return ExcludeSemantics(
@@ -409,20 +429,24 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
           // 始终显示渐变兜底背景，避免封面加载期间出现纯黑背景
           const _FallbackBackground(),
           if (coverUrl != null)
-            OverflowBox(
-              maxWidth: squareSize,
-              maxHeight: squareSize,
-              minWidth: squareSize,
-              minHeight: squareSize,
-              child: ImageFiltered(
-                imageFilter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+            Center(
+              child: SizedBox(
+                width: bgDim,
+                height: bgDim,
                 child: RotationTransition(
                   turns: _rotationController,
-                  child: Image.network(
-                    coverUrl,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) =>
-                        const SizedBox.shrink(),
+                  child: RepaintBoundary(
+                    child: ImageFiltered(
+                      imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                      child: Image.network(
+                        coverUrl,
+                        fit: BoxFit.cover,
+                        cacheWidth: 360,
+                        cacheHeight: 360,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const SizedBox.shrink(),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -576,10 +600,8 @@ class _LandscapeHeader extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      song.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    MarqueeText(
+                      text: song.title,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: Colors.white.withValues(alpha: .92),
                         fontSize: compact ? 14 : 16,
@@ -928,10 +950,9 @@ class _LandscapeRightPanel extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.center,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      song.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    MarqueeText(
+                      text: song.title,
+                      textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                             color: Colors.white.withValues(alpha: .92),
                             fontSize: compact ? 18 : 22,
@@ -1154,10 +1175,8 @@ class _TopBar extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      song.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    MarqueeText(
+                      text: song.title,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,

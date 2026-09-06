@@ -4,6 +4,7 @@ import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
 import 'artwork.dart';
+import 'marquee_text.dart';
 import 'toast.dart';
 
 class CarLeftPlayerPanel extends StatelessWidget {
@@ -144,10 +145,8 @@ class CarLeftPlayerPanel extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              song.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            MarqueeText(
+                              text: song.title,
                               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                     fontWeight: FontWeight.w900,
                                     fontSize: 18,
@@ -450,15 +449,19 @@ class CarLeftPlayerPanel extends StatelessWidget {
                           return ListTile(
                             selected: active,
                             leading: Artwork(url: song.coverUrl, size: 40, borderRadius: 8),
-                            title: Text(
-                              song.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: active ? colorScheme.primary : null,
-                                fontWeight: active ? FontWeight.bold : null,
-                              ),
-                            ),
+                            title: active
+                                ? MarqueeText(
+                                    text: song.title,
+                                    style: TextStyle(
+                                      color: colorScheme.primary,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  )
+                                : Text(
+                                    song.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                             subtitle: Text(song.artist),
                             trailing: active
                                 ? Icon(

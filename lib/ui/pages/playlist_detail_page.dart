@@ -21,6 +21,7 @@ import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
+import '../widgets/marquee_text.dart';
 import '../adaptive_layout.dart';
 import 'artist_detail_page.dart';
 
@@ -474,6 +475,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             .toList());
         _isInitialLoading = false;
       });
+      if (widget.player.currentSong != null) {
+        unawaited(_autoLocateCurrentSong());
+      }
     }
 
     try {
@@ -647,11 +651,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     if (_autoLocateDone || _isLocating) return;
     final current = widget.player.currentSong;
     if (current == null) return;
-    _autoLocateDone = true;
     _isLocating = true;
     try {
       var index = _filteredSongs.indexWhere((s) => s.hash == current.hash);
-      if (index < 0 && _queueMatchesThisPlaylist()) {
+      if (index < 0 && _shouldSearchForCurrentSong(current)) {
         // 逐页加载直到找到（上限 24 页，异常情况不再继续）
         var pages = 0;
         while (index < 0 &&
@@ -664,6 +667,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         }
       }
       if (index >= 0 && mounted) {
+        _autoLocateDone = true;
         await _scrollToSong(index);
       }
     } finally {
@@ -671,14 +675,33 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
-  /// 当前播放队列是否「像」来自本歌单：已加载歌曲全部属于当前队列。
-  ///
-  /// 在本歌单内点播放时队列即完整歌单，此判断可避免在其他歌单页面
-  /// 触发无意义的全量加载。
-  bool _queueMatchesThisPlaylist() {
+  /// 判断当前播放歌曲是否属于本歌单/专辑，需要向下翻页查找。
+  bool _shouldSearchForCurrentSong(Song current) {
+    if (_songs.isEmpty) return false;
+    // 专辑详情页：比对专辑 ID 或专辑名
+    if (_isAlbum) {
+      final targetAlbumId = widget.playlist.albumId ?? widget.playlist.id;
+      if (current.albumId != null && current.albumId == targetAlbumId) {
+        return true;
+      }
+      if (current.albumName != null &&
+          current.albumName!.isNotEmpty &&
+          current.albumName == widget.playlist.title) {
+        return true;
+      }
+    }
+    // 歌单详情页：若播放队列中包含当前歌曲且与歌单歌曲有交集
     final queueHashes = widget.player.queue.map((s) => s.hash).toSet();
-    if (queueHashes.isEmpty || _songs.isEmpty) return false;
-    return _songs.every((s) => queueHashes.contains(s.hash));
+    if (queueHashes.contains(current.hash)) {
+      if (_songs.any((s) => queueHashes.contains(s.hash))) {
+        return true;
+      }
+      final total = _info?.songCount ?? widget.playlist.songCount;
+      if (total != null && (total - widget.player.queue.length).abs() <= 10) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// 滚动到展示列表中 [displayIndex] 所在行：先按固定行高估算偏移跳转，
@@ -694,16 +717,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
 
     final topInset = MediaQuery.paddingOf(context).top;
-    // 折叠后 SliverAppBar 工具栏高度 + _Actions 操作行（含 padding）+
-    // 列表顶部 padding；歌曲行高 68 + 分隔 2。
     const actionsHeight = 70.0;
     const listTopPadding = 4.0;
-    const rowExtent = 70.0;
-    final targetOffset = kToolbarHeight +
-        topInset +
-        actionsHeight +
-        listTopPadding +
-        displayIndex * rowExtent;
+    const rowExtent = 72.0;
+    final collapseDelta = 198.0 - (kToolbarHeight + topInset);
+    final targetOffset = displayIndex == 0
+        ? 0.0
+        : (collapseDelta.clamp(0.0, 198.0) +
+            actionsHeight +
+            listTopPadding +
+            (displayIndex * rowExtent));
 
     setState(() => _locateTargetIndex = displayIndex);
 
@@ -711,9 +734,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     _scrollController.jumpTo(targetOffset.clamp(0.0, position.maxScrollExtent));
 
     // 精确校正：定位行 key 一旦构建，用 ensureVisible 对齐到视口上 1/4 处。
-    // 估算偏移与真实偏移存在误差（字体缩放等）时，向后/向前各探测一屏。
-    var probe = 0; // 0=未探测 1=已向后探测 2=已双向探测
-    for (var attempt = 0; attempt < 10; attempt++) {
+    for (var attempt = 0; attempt < 6; attempt++) {
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
       final rowContext = _locateRowKey.currentContext;
@@ -725,31 +746,6 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         );
         if (mounted) setState(() => _locateTargetIndex = null);
         return;
-      }
-      final currentPosition = _scrollController.position;
-      final remaining = targetOffset - currentPosition.pixels;
-      if (remaining.abs() > 4) {
-        // 尚未到达估算位置：直接跳到估算偏移
-        _scrollController.jumpTo(
-          (currentPosition.pixels + remaining)
-              .clamp(0.0, currentPosition.maxScrollExtent),
-        );
-        continue;
-      }
-      if (probe == 0) {
-        probe = 1;
-        _scrollController.jumpTo(
-          (currentPosition.pixels - currentPosition.viewportDimension * 0.9)
-              .clamp(0.0, currentPosition.maxScrollExtent),
-        );
-      } else if (probe == 1) {
-        probe = 2;
-        _scrollController.jumpTo(
-          (currentPosition.pixels + currentPosition.viewportDimension * 0.9)
-              .clamp(0.0, currentPosition.maxScrollExtent),
-        );
-      } else {
-        break;
       }
     }
     if (mounted) setState(() => _locateTargetIndex = null);
@@ -1883,15 +1879,22 @@ class _SongRow extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        song.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: active ? activeColor : null,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
+                      active
+                          ? MarqueeText(
+                              text: song.title,
+                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                color: activeColor,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            )
+                          : Text(
+                              song.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
                       const SizedBox(height: 3),
                       Text(
                         song.artist,

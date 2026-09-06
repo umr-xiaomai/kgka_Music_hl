@@ -28,8 +28,9 @@ class MiniPlayer extends StatefulWidget {
 }
 
 class _MiniPlayerState extends State<MiniPlayer>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _rotationController;
+  bool _appInBackground = false;
 
   @override
   void initState() {
@@ -38,6 +39,13 @@ class _MiniPlayerState extends State<MiniPlayer>
       vsync: this,
       duration: const Duration(seconds: 24),
     );
+    WidgetsBinding.instance.addObserver(this);
+    _syncRotation();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appInBackground = state != AppLifecycleState.resumed;
     _syncRotation();
   }
 
@@ -49,12 +57,13 @@ class _MiniPlayerState extends State<MiniPlayer>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _rotationController.dispose();
     super.dispose();
   }
 
   void _syncRotation() {
-    if (widget.player.isPlaying) {
+    if (widget.player.isPlaying && !_appInBackground) {
       if (!_rotationController.isAnimating) {
         _rotationController.repeat();
       }
@@ -96,8 +105,9 @@ class _MiniPlayerState extends State<MiniPlayer>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final colorScheme = Theme.of(context).colorScheme;
 
-    return ExcludeSemantics(
-      child: AnimatedBuilder(
+    return RepaintBoundary(
+      child: ExcludeSemantics(
+        child: AnimatedBuilder(
         animation: widget.player,
         builder: (context, _) {
           _syncRotation();
@@ -212,43 +222,47 @@ class _MiniPlayerState extends State<MiniPlayer>
                                   ],
                                 ),
                                 child: ClipOval(
-                                  child: RotationTransition(
-                                    turns: _rotationController,
-                                    child: Stack(
-                                      alignment: Alignment.center,
-                                      children: [
-                                        Artwork(
-                                          url: song.coverUrl,
-                                          size: 38,
-                                          borderRadius: 38,
-                                        ),
-                                        // 唱片同心圆边缘纹理
-                                        DecoratedBox(
-                                          decoration: BoxDecoration(
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                              color: Colors.white.withValues(alpha: .25),
-                                              width: 0.8,
-                                            ),
+                                  child: RepaintBoundary(
+                                    child: RotationTransition(
+                                      turns: _rotationController,
+                                      child: Stack(
+                                        alignment: Alignment.center,
+                                        children: [
+                                          Artwork(
+                                            url: song.coverUrl,
+                                            size: 38,
+                                            borderRadius: 38,
                                           ),
-                                          child: const SizedBox.expand(),
-                                        ),
-                                        // 中心轴孔微光
-                                        Center(
-                                          child: Container(
-                                            width: 6,
-                                            height: 6,
+                                          // 唱片同心圆边缘纹理
+                                          DecoratedBox(
                                             decoration: BoxDecoration(
                                               shape: BoxShape.circle,
-                                              color: colorScheme.surface,
                                               border: Border.all(
-                                                color: Colors.black.withValues(alpha: .35),
+                                                color: Colors.white.withValues(alpha: .25),
                                                 width: 0.8,
                                               ),
                                             ),
+                                            child: const SizedBox.expand(),
                                           ),
-                                        ),
-                                      ],
+                                          // 中心轴孔微光
+                                          Center(
+                                            child: Container(
+                                              width: 6,
+                                              height: 6,
+                                              decoration: BoxDecoration(
+                                                color: isDark
+                                                    ? const Color(0xFF0F131A)
+                                                    : Colors.white,
+                                                shape: BoxShape.circle,
+                                                border: Border.all(
+                                                  color: Colors.white.withValues(alpha: .6),
+                                                  width: 0.8,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -265,6 +279,7 @@ class _MiniPlayerState extends State<MiniPlayer>
           );
         },
       ),
+    ),
     );
   }
 }
