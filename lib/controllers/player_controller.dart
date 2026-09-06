@@ -50,6 +50,8 @@ class PlayerController extends ChangeNotifier {
   static const _desktopLyricsSettingsKey = 'settings.desktop_lyrics_settings';
   static const _smartQualitySettingKey = 'settings.smart_quality_enabled';
   static const _autoPlayOnStartupSettingKey = 'settings.auto_play_on_startup';
+  static const _resumeLastPlaylistOnStartupSettingKey =
+      'settings.resume_last_playlist_on_startup';
   static const _autoPlayOnDeviceConnectedSettingKey =
       'settings.auto_play_on_device_connected';
   static const _volumeNormalizationEnabledSettingKey =
@@ -243,6 +245,7 @@ class PlayerController extends ChangeNotifier {
   /// 是否开启音质智能切换（播放失败时自动降级重试）。
   bool smartQualityEnabled = false;
   bool autoPlayOnStartupEnabled = false;
+  bool resumeLastPlaylistOnStartupEnabled = false;
   double playbackSpeed = 1.0;
   bool equalizerEnabled = false;
   List<int> equalizerLevels = List<int>.of(_defaultEqualizerLevels);
@@ -671,12 +674,40 @@ class PlayerController extends ChangeNotifier {
     return prefs.getBool(_autoPlayOnStartupSettingKey) ?? false;
   }
 
-  /// 开关开机自启播放歌曲功能。
+  /// “恢复上次播放列表”开关当前是否已开启（从持久化存储读取）。
+  static Future<bool> isResumeLastPlaylistOnStartup() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_resumeLastPlaylistOnStartupSettingKey) ?? false;
+  }
+
+  /// 开关开机自启播放（推荐歌单）。
+  ///
+  /// 与“恢复上次播放列表”互斥：开启时自动关闭另一项，两项只能启用其一。
   Future<void> setAutoPlayOnStartupEnabled(bool enabled) async {
     if (autoPlayOnStartupEnabled == enabled) return;
     autoPlayOnStartupEnabled = enabled;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_autoPlayOnStartupSettingKey, enabled);
+    if (enabled && resumeLastPlaylistOnStartupEnabled) {
+      resumeLastPlaylistOnStartupEnabled = false;
+      await prefs.setBool(_resumeLastPlaylistOnStartupSettingKey, false);
+    }
+    notifyListeners();
+  }
+
+  /// 开关“打开应用时自动加载并播放上一次播放的列表”。
+  ///
+  /// 与“开机自启播放（推荐歌单）”互斥：开启时自动关闭另一项，保持只启用其一。
+  Future<void> setResumeLastPlaylistOnStartupEnabled(bool enabled) async {
+    if (resumeLastPlaylistOnStartupEnabled == enabled) return;
+    resumeLastPlaylistOnStartupEnabled = enabled;
+    if (enabled && autoPlayOnStartupEnabled) {
+      autoPlayOnStartupEnabled = false;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_autoPlayOnStartupSettingKey, false);
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_resumeLastPlaylistOnStartupSettingKey, enabled);
     notifyListeners();
   }
 
@@ -1770,6 +1801,9 @@ class PlayerController extends ChangeNotifier {
         prefs.getBool(_smartQualitySettingKey) ?? smartQualityEnabled;
     autoPlayOnStartupEnabled =
         prefs.getBool(_autoPlayOnStartupSettingKey) ?? autoPlayOnStartupEnabled;
+    resumeLastPlaylistOnStartupEnabled =
+        prefs.getBool(_resumeLastPlaylistOnStartupSettingKey) ??
+        resumeLastPlaylistOnStartupEnabled;
     equalizerEnabled =
         prefs.getBool(_equalizerEnabledSettingKey) ?? equalizerEnabled;
     equalizerPresetName =
@@ -2304,8 +2338,10 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 在恢复队列后加载并准备播放当前歌曲（不自动播放，仅预加载）。
-  Future<void> prepareRestoredSong() async {
+  /// 在恢复队列后加载并准备播放当前歌曲（默认不自动播放，仅预加载）。
+  ///
+  /// [autoPlay] 为 true 时（“恢复上次播放列表”开机模式）加载完成后立即播放。
+  Future<void> prepareRestoredSong({bool autoPlay = false}) async {
     final song = currentSong;
     if (song == null) return;
     climax = null;
@@ -2344,6 +2380,12 @@ class PlayerController extends ChangeNotifier {
 
       unawaited(loadLyrics(song));
       _startPositionSaving();
+      if (autoPlay) {
+        await _audioHandler.play();
+        // 记录播放历史与本地播放统计（后台执行，不阻塞播放）
+        unawaited(_historyService.record(song));
+        unawaited(_statsService.recordPlay(song));
+      }
     } catch (e) {
       debugPrint('[KA Music] Failed to prepare restored song: $e');
     } finally {

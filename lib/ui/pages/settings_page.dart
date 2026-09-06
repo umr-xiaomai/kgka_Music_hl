@@ -205,6 +205,15 @@ class SettingsPage extends StatelessWidget {
                     ),
                     _SettingsDivider(),
                     _SettingsSwitchTile(
+                      icon: Icons.history_rounded,
+                      iconColor: colorScheme.primary,
+                      title: '恢复上次播放列表',
+                      subtitle: '打开应用时自动加载并播放上一次播放的列表（与开机自启播放互斥）',
+                      value: player.resumeLastPlaylistOnStartupEnabled,
+                      onChanged: player.setResumeLastPlaylistOnStartupEnabled,
+                    ),
+                    _SettingsDivider(),
+                    _SettingsSwitchTile(
                       icon: Icons.bluetooth_audio_rounded,
                       iconColor: colorScheme.primary,
                       title: '连接新音频设备自动播放',
