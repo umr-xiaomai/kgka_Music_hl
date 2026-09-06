@@ -104,6 +104,11 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
   /// 恢复上次的播放队列和进度。
   Future<void> _restorePlaybackState() async {
     await _player.restoreQueueState();
+    // 开机自启播放开启时，不预加载上次的歌曲：首页的自动播放逻辑会
+    // 用每日推荐歌单接管，避免恢复队列与自动播放竞争覆盖同一播放源。
+    if (await PlayerController.isAutoPlayOnStartup()) {
+      return;
+    }
     if (_player.currentSong != null) {
       unawaited(_player.prepareRestoredSong());
       return;

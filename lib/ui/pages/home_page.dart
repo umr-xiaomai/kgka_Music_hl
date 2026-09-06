@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -80,7 +81,7 @@ class _HomePageState extends State<HomePage> {
     final cached = _cachedData;
     if (cached != null) {
       _future = Future.value(cached);
-      _checkAndAutoPlay(cached);
+      unawaited(_checkAndAutoPlay(cached));
       // 有缓存数据，立即显示并后台静默刷新
       _silentRefresh();
     } else if (!widget.auth.isRestoring) {
@@ -133,32 +134,58 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _checkAndAutoPlay(_HomeData data) {
-    if (widget.player.autoPlayOnStartupEnabled &&
-        !_hasAutoPlayed &&
-        widget.player.currentSong == null) {
+  /// 开机自启播放：打开应用后自动加载并播放每日推荐歌单。
+  ///
+  /// 原实现要求 [PlayerController.currentSong] 为 null 才触发，但应用启动时
+  /// main.dart 的 _restorePlaybackState() 总会先从本地/服务端恢复上次播放的
+  /// currentSong，导致该条件几乎永远不成立，开关形同虚设。
+  /// 改为“当前未在播放”时即触发；同时等待持久化设置恢复完成，
+  /// 避免开关尚未从磁盘读出时被误判为关闭。
+  Future<void> _checkAndAutoPlay(_HomeData data) async {
+    if (_hasAutoPlayed) return;
+    // 等待播放器设置恢复完成（含开机自启开关），最多兜底 2 秒，
+    // 防止 SharedPreferences 异常时永久挂起。
+    await Future.any([
+      widget.player.settingsRestored,
+      Future<void>.delayed(const Duration(seconds: 2)),
+    ]);
+    if (!mounted || _hasAutoPlayed) return;
+    // 已有歌曲正在播放（例如通知栏/后台恢复），不抢占。
+    if (widget.player.isPlaying) {
       _hasAutoPlayed = true;
-      final songs = data.daily.songs;
-      if (songs.isNotEmpty) {
-        // 必须推迟到首帧构建完成后执行：_checkAndAutoPlay 会在 initState
-        // 阶段被同步调用，此时直接调用 playSong 会触发 notifyListeners()，
-        // 违反 Flutter "build 阶段不能触发 setState/notifyListeners" 规则。
-        // 叠加 Windows 平台 just_audio 的 WinRT MediaPlayer COM 线程在应用
-        // 启动早期尚未完全就绪，立即 setUrl()/play() 会与 UI 渲染竞争，
-        // 导致 "Lost connection to device" 进程崩溃。
-        // Windows 上额外延迟 300ms 让 native 层完全稳定后再启动播放。
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          final delay = Platform.isWindows
-              ? const Duration(milliseconds: 300)
-              : Duration.zero;
-          Future<void>.delayed(delay, () {
-            if (!mounted) return;
-            widget.player.playSong(songs.first, queue: songs);
-          });
-        });
-      }
+      return;
     }
+    if (!widget.player.autoPlayOnStartupEnabled) return;
+    final songs = data.daily.songs;
+    if (songs.isEmpty) {
+      // 推荐歌单不可用（无网/无缓存）时的降级：预加载上次播放的歌曲。
+      // 自启开启时 main.dart 跳过了预加载，这里补上，保证用户仍能手动播放。
+      if (widget.player.currentSong != null) {
+        unawaited(widget.player.prepareRestoredSong());
+      }
+      return;
+    }
+    _hasAutoPlayed = true;
+    // 必须推迟到首帧构建完成后执行：_checkAndAutoPlay 会在 initState
+    // 阶段被同步调用，此时直接调用 playSong 会触发 notifyListeners()，
+    // 违反 Flutter "build 阶段不能触发 setState/notifyListeners" 规则。
+    // 叠加 Windows 平台 just_audio 的 WinRT MediaPlayer COM 线程在应用
+    // 启动早期尚未完全就绪，立即 setUrl()/play() 会与 UI 渲染竞争，
+    // 导致 "Lost connection to device" 进程崩溃。
+    // Windows 上额外延迟 300ms 让 native 层完全稳定后再启动播放。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final delay = Platform.isWindows
+          ? const Duration(milliseconds: 300)
+          : Duration.zero;
+      Future<void>.delayed(delay, () {
+        if (!mounted) return;
+        // 二次校验：等待期间用户可能已手动开始播放或关闭开关。
+        if (!widget.player.autoPlayOnStartupEnabled) return;
+        if (widget.player.isPlaying) return;
+        widget.player.playSong(songs.first, queue: songs);
+      });
+    });
   }
 
   /// 后台静默刷新首页数据。
@@ -185,6 +212,8 @@ class _HomePageState extends State<HomePage> {
         recommendedSongCards: results[5] as List<RecommendedSongCard>,
       );
       _cachedData = data;
+      // 先触发自启播放，避免缓存写入失败（磁盘异常等）连带影响自动播放。
+      unawaited(_checkAndAutoPlay(data));
       await widget.cache.write('cache_home', {
         'daily': data.daily.toCache(),
         'playlists': data.playlists.map((p) => p.toCache()).toList(),
@@ -196,7 +225,6 @@ class _HomePageState extends State<HomePage> {
             .toList(),
       });
       if (!mounted) return;
-      _checkAndAutoPlay(data);
       setState(() {
         _future = Future.value(data);
       });
@@ -223,6 +251,8 @@ class _HomePageState extends State<HomePage> {
       recommendedSongCards: results[5] as List<RecommendedSongCard>,
     );
     _cachedData = data;
+    // 先触发自启播放，避免缓存写入失败（磁盘异常等）连带影响自动播放。
+    unawaited(_checkAndAutoPlay(data));
     await widget.cache.write('cache_home', {
       'daily': data.daily.toCache(),
       'playlists': data.playlists.map((p) => p.toCache()).toList(),
@@ -233,7 +263,6 @@ class _HomePageState extends State<HomePage> {
           .map((card) => card.toCache())
           .toList(),
     });
-    _checkAndAutoPlay(data);
     return data;
   }
 
@@ -247,7 +276,7 @@ class _HomePageState extends State<HomePage> {
     if (cached != null) {
       final data = _homeDataFromCache(cached.data);
       _cachedData = data;
-      _checkAndAutoPlay(data);
+      unawaited(_checkAndAutoPlay(data));
       setState(() {
         _future = Future.value(data);
       });

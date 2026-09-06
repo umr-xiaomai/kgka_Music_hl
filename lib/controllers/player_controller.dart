@@ -166,6 +166,15 @@ class PlayerController extends ChangeNotifier {
 
   final MusicApi _api;
   final MusicAudioHandler _audioHandler;
+
+  /// 持久化设置恢复完成信号。
+  ///
+  /// 用于“开机自启播放”等依赖持久化开关值的流程等待设置加载完成，
+  /// 避免在 [_restoreSettings] 完成前把开关误读为默认值。
+  final Completer<void> _settingsRestored = Completer<void>();
+
+  /// 设置（含开机自启开关）从本地恢复完成的 Future。
+  Future<void> get settingsRestored => _settingsRestored.future;
   final AudioEffectsService _audioEffects = AudioEffectsService();
   final DesktopLyricsService _desktopLyrics = DesktopLyricsService();
   final PlaybackHistoryService _historyService = PlaybackHistoryService();
@@ -651,6 +660,15 @@ class PlayerController extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_smartQualitySettingKey, enabled);
     notifyListeners();
+  }
+
+  /// 开机自启播放开关当前是否已开启（从持久化存储读取）。
+  ///
+  /// 供启动流程判断是否需要预加载上次播放：开启时由首页自动播放逻辑
+  /// 接管，避免两套加载流程竞争覆盖同一播放源。
+  static Future<bool> isAutoPlayOnStartup() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_autoPlayOnStartupSettingKey) ?? false;
   }
 
   /// 开关开机自启播放歌曲功能。
@@ -1801,6 +1819,9 @@ class PlayerController extends ChangeNotifier {
     unawaited(_applyBassBoost());
     unawaited(_applyVolumeNormalization());
     notifyListeners();
+    if (!_settingsRestored.isCompleted) {
+      _settingsRestored.complete();
+    }
   }
 
   List<int> _restoreEqualizerLevels(String? raw) {
