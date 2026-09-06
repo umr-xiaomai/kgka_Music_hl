@@ -90,10 +90,10 @@ class MusicAudioHandler extends BaseAudioHandler
     final Map<String, dynamic> extras = {
       'hash': song.hash,
       'songId': song.id,
-      if (lyricText != null) 'lyric': lyricText,
-      if (lyricText != null) 'currentLyric': lyricText,
-      if (translationText != null) 'translationLyric': translationText,
-      if (romanizationText != null) 'romanLyric': romanizationText,
+      'lyric': ?lyricText,
+      'currentLyric': ?lyricText,
+      'translationLyric': ?translationText,
+      'romanLyric': ?romanizationText,
     };
     final updated = MediaItem(
       id: song.hash.isEmpty ? song.id : song.hash,
