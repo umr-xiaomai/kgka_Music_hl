@@ -859,6 +859,35 @@ class MusicApi {
         .toList();
   }
 
+  /// 搜索专辑（酷狗）。
+  ///
+  /// 与 [searchSongs] 共用 `/search` 接口，`type=album` 返回专辑列表。
+  Future<List<ArtistAlbum>> searchAlbums(
+    String keywords, {
+    int page = 1,
+    int pageSize = 30,
+  }) async {
+    final raw = await _client.get('/search', {
+      'keywords': keywords,
+      'page': page,
+      'pagesize': pageSize,
+      'type': 'album',
+    });
+    // API returns either a plain array or { albums: [...] }
+    final List albums;
+    if (raw is List) {
+      albums = raw;
+    } else {
+      final json = asMap(raw);
+      albums = asList(json['albums'] ?? json['album'] ?? json['lists']);
+    }
+    return albums
+        .whereType<Map<String, dynamic>>()
+        .map(ArtistAlbum.fromJson)
+        .where((album) => album.id.isNotEmpty)
+        .toList();
+  }
+
   /// 搜索网易云歌曲。
   ///
   /// 使用独立的网易云 API（`wyy.music.api.hoilai.cn`）：

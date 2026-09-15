@@ -17,6 +17,7 @@ import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
 import '../adaptive_layout.dart';
 import 'artist_detail_page.dart';
+import 'playlist_detail_page.dart';
 import 'dart:math' as math;
 
 class SearchPage extends StatefulWidget {
@@ -38,6 +39,9 @@ class SearchPage extends StatefulWidget {
 /// 搜索平台。
 enum _SearchPlatform { kugou, netease }
 
+/// 搜索类型。
+enum _SearchType { song, album }
+
 class _SearchPageState extends State<SearchPage> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
@@ -47,9 +51,11 @@ class _SearchPageState extends State<SearchPage> {
   var _hotLoading = true;
   List<String> _suggestions = const [];
   List<Song> _results = const [];
+  List<ArtistAlbum> _albums = const [];
   bool _loading = false;
   bool _searched = false;
   _SearchPlatform _platform = _SearchPlatform.kugou;
+  _SearchType _type = _SearchType.song;
 
   // 搜索历史
   final _historyService = SearchHistoryService();
@@ -101,6 +107,7 @@ class _SearchPageState extends State<SearchPage> {
       setState(() {
         _suggestions = const [];
         _results = const [];
+        _albums = const [];
         _searched = false;
       });
       return;
@@ -128,10 +135,25 @@ class _SearchPageState extends State<SearchPage> {
       _searched = true;
     });
     try {
-      final songs = _platform == _SearchPlatform.netease
-          ? await widget.api.searchNetEaseSongs(keywords)
-          : await widget.api.searchSongs(keywords);
-      if (mounted) setState(() => _results = songs);
+      if (_type == _SearchType.album) {
+        final albums = await widget.api.searchAlbums(keywords);
+        if (mounted) {
+          setState(() {
+            _albums = albums;
+            _results = const [];
+          });
+        }
+      } else {
+        final songs = _platform == _SearchPlatform.netease
+            ? await widget.api.searchNetEaseSongs(keywords)
+            : await widget.api.searchSongs(keywords);
+        if (mounted) {
+          setState(() {
+            _results = songs;
+            _albums = const [];
+          });
+        }
+      }
       // 搜索成功后记录历史
       await _historyService.add(keywords);
       await _loadSearchHistory();
@@ -165,6 +187,35 @@ class _SearchPageState extends State<SearchPage> {
     if (text.isNotEmpty && _searched) {
       _search(text);
     }
+  }
+
+  void _switchType(_SearchType type) {
+    if (_type == type) return;
+    setState(() => _type = type);
+    // 已有搜索关键词时切换类型后自动重新搜索
+    final text = _controller.text.trim();
+    if (text.isNotEmpty && _searched) {
+      _search(text);
+    }
+  }
+
+  /// 打开专辑：复用歌单详情页展示专辑曲目。
+  void _openAlbum(ArtistAlbum album) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlaylistDetailPage(
+          api: widget.api,
+          auth: widget.auth,
+          player: widget.player,
+          playlist: PlaylistSummary(
+            id: album.id,
+            title: album.name,
+            subtitle: album.authorName ?? '',
+            coverUrl: album.coverUrl,
+          ),
+        ),
+      ),
+    );
   }
 
   void _playSong(Song song) {
@@ -228,7 +279,7 @@ class _SearchPageState extends State<SearchPage> {
                         },
                       )
                     : null,
-                hintText: '搜索歌曲，歌手',
+                hintText: '搜索歌曲、歌手、专辑',
                 hintStyle: TextStyle(color: colorScheme.onSurfaceVariant),
                 border: InputBorder.none,
                 contentPadding: const EdgeInsets.symmetric(vertical: 11),
@@ -320,7 +371,7 @@ class _SearchPageState extends State<SearchPage> {
                           },
                         )
                       : null,
-                  hintText: '搜索歌曲，歌手',
+                  hintText: '搜索歌曲、歌手、专辑',
                   hintStyle: TextStyle(
                     color: colorScheme.onSurfaceVariant,
                     fontSize: 14,
@@ -372,9 +423,13 @@ class _SearchPageState extends State<SearchPage> {
 
     return Column(
       children: [
-        // 平台切换栏（仅搜索状态下显示）
-        if (text.isNotEmpty || _searched)
-          _PlatformSelector(platform: _platform, onChanged: _switchPlatform),
+        // 类型/平台切换栏（仅搜索状态下显示）
+        if (text.isNotEmpty || _searched) ...[
+          _TypeSelector(type: _type, onChanged: _switchType),
+          // 专辑搜索目前仅酷狗源支持，歌曲搜索才显示平台切换
+          if (_type == _SearchType.song)
+            _PlatformSelector(platform: _platform, onChanged: _switchPlatform),
+        ],
         Expanded(child: _buildContent(context, text)),
       ],
     );
@@ -386,6 +441,11 @@ class _SearchPageState extends State<SearchPage> {
     }
 
     if (_searched && text.isNotEmpty) {
+      if (_type == _SearchType.album) {
+        return _albums.isEmpty
+            ? _EmptyResults(keyword: text)
+            : _AlbumResults(albums: _albums, onTap: _openAlbum);
+      }
       return _results.isEmpty
           ? _EmptyResults(keyword: text)
           : _SearchResults(
@@ -552,6 +612,48 @@ class _SearchPageState extends State<SearchPage> {
     }
 
     return const SizedBox.shrink();
+  }
+}
+
+/// 类型切换选择器（单曲/专辑）。
+class _TypeSelector extends StatelessWidget {
+  const _TypeSelector({required this.type, required this.onChanged});
+
+  final _SearchType type;
+  final ValueChanged<_SearchType> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 8, 18, 4),
+      child: Row(
+        children: [
+          for (final t in _SearchType.values) ...[
+            LiquidGlassCapsule(
+              isActive: type == t,
+              onTap: () => onChanged(t),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 7,
+              ),
+              child: Text(
+                t == _SearchType.song ? '单曲' : '专辑',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: type == t
+                      ? (isDark ? Colors.white : colorScheme.primary)
+                      : colorScheme.onSurfaceVariant,
+                  fontWeight: type == t ? FontWeight.w800 : FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+          ],
+        ],
+      ),
+    );
   }
 }
 
@@ -962,6 +1064,81 @@ class _SuggestionList extends StatelessWidget {
             ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
           ),
           onTap: () => onTap(keyword),
+        );
+      },
+    );
+  }
+}
+
+/// 专辑搜索结果列表。
+class _AlbumResults extends StatelessWidget {
+  const _AlbumResults({required this.albums, required this.onTap});
+
+  final List<ArtistAlbum> albums;
+  final ValueChanged<ArtistAlbum> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(18, 4, 18, 160),
+      itemCount: albums.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 2),
+      itemBuilder: (context, index) {
+        final album = albums[index];
+        final subtitle = [
+          if (album.authorName != null && album.authorName!.isNotEmpty)
+            album.authorName!,
+          if (album.publishDate != null && album.publishDate!.isNotEmpty)
+            album.publishDate!,
+        ].join(' · ');
+        return InkWell(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          onTap: () => onTap(album),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+            child: Row(
+              children: [
+                Artwork(url: album.coverUrl, size: 58, borderRadius: 8),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        album.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall
+                            ?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 16,
+                            ),
+                      ),
+                      if (subtitle.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                                fontWeight: FontWeight.w500,
+                              ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: colorScheme.outline,
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
