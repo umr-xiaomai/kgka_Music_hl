@@ -2085,16 +2085,26 @@ class ArtistAlbum {
 
   factory ArtistAlbum.fromJson(Map<String, dynamic> json) {
     return ArtistAlbum(
-      id: asString(json['album_id']) ?? asString(json['id']) ?? '',
+      // `/artist/albums` 用 album_id/id，搜索 `/search type=album` 用 albumid。
+      id:
+          asString(json['album_id']) ??
+          asString(json['id']) ??
+          asString(json['albumid']) ??
+          '',
       name:
           asString(json['album_name']) ??
           asString(json['name']) ??
+          asString(json['albumname']) ??
           '未知专辑',
       coverUrl: normalizeImageUrl(
-        asString(json['cover']) ?? asString(json['sizable_cover']),
+        asString(json['cover']) ??
+            asString(json['sizable_cover']) ??
+            asString(json['img']),
       ),
-      authorName: asString(json['author_name']),
-      publishDate: asString(json['publish_date']),
+      authorName:
+          asString(json['author_name']) ?? asString(json['singer']),
+      publishDate:
+          asString(json['publish_date']) ?? asString(json['publish_time']),
       intro: asString(json['intro']),
     );
   }
