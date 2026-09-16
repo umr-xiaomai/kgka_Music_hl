@@ -413,6 +413,16 @@ class SettingsPage extends StatelessWidget {
                       value: theme.carModeEnabled,
                       onChanged: (value) => theme.setCarModeEnabled(value),
                     ),
+                    _SettingsDivider(),
+                    _SettingsSwitchTile(
+                      icon: Icons.auto_awesome_rounded,
+                      iconColor: colorScheme.primary,
+                      title: 'UI 美化',
+                      subtitle: '毛玻璃与模糊特效，关闭可提升流畅度',
+                      value: theme.uiBeautificationEnabled,
+                      onChanged: (value) =>
+                          theme.setUiBeautificationEnabled(value),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 24),

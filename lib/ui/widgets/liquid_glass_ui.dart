@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import '../controllers/theme_controller.dart';
 import '../design_tokens.dart';
 
 /// 全局流体极光氛围底层背景（iOS 26 Ambient Mesh Background）。
@@ -147,11 +148,13 @@ class _LiquidGlassCardState extends State<LiquidGlassCard> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final beautify = ThemeController.instance.uiBeautificationEnabled;
 
     final effectiveBgColor = widget.backgroundColor ??
         (isDark
-            ? colorScheme.surfaceContainerHighest.withValues(alpha: .38)
-            : Colors.white.withValues(alpha: .75));
+            ? colorScheme.surfaceContainerHighest.withValues(
+                alpha: beautify ? .38 : .78)
+            : Colors.white.withValues(alpha: beautify ? .75 : .94));
 
     final effectiveBorderColor = widget.borderColor ??
         (isDark
@@ -178,7 +181,7 @@ class _LiquidGlassCardState extends State<LiquidGlassCard> {
       );
     }
 
-    final hasBlur = widget.blurSigma > 0;
+    final hasBlur = widget.blurSigma > 0 && beautify;
     final cardDecoration = BoxDecoration(
       color: effectiveBgColor,
       borderRadius: BorderRadius.circular(widget.borderRadius),
@@ -272,13 +275,15 @@ class _LiquidGlassCapsuleState extends State<LiquidGlassCapsule> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final beautify = ThemeController.instance.uiBeautificationEnabled;
     final effectiveActiveColor = widget.activeColor ?? colorScheme.primary;
 
     final effectiveBgColor = widget.isActive
         ? effectiveActiveColor.withValues(alpha: isDark ? .35 : .22)
         : (isDark
-            ? colorScheme.surfaceContainerHighest.withValues(alpha: .38)
-            : Colors.white.withValues(alpha: .82));
+            ? colorScheme.surfaceContainerHighest.withValues(
+                alpha: beautify ? .38 : .60)
+            : Colors.white.withValues(alpha: beautify ? .82 : .95));
 
     final effectiveBorderColor = widget.isActive
         ? effectiveActiveColor.withValues(alpha: .70)
@@ -304,7 +309,7 @@ class _LiquidGlassCapsuleState extends State<LiquidGlassCapsule> {
       );
     }
 
-    final hasBlur = widget.blurSigma > 0;
+    final hasBlur = widget.blurSigma > 0 && beautify;
     final capsuleDecoration = BoxDecoration(
       color: effectiveBgColor,
       borderRadius: BorderRadius.circular(100),
@@ -440,6 +445,7 @@ class LiquidGlassSheetContainer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final beautify = ThemeController.instance.uiBeautificationEnabled;
 
     return Container(
       constraints: constraints,
@@ -461,29 +467,35 @@ class LiquidGlassSheetContainer extends StatelessWidget {
         borderRadius: BorderRadius.vertical(
           top: Radius.circular(borderRadius),
         ),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: isDark
-                  ? const Color(0xFF141822).withValues(alpha: .85)
-                  : Colors.white.withValues(alpha: .88),
-              borderRadius: BorderRadius.vertical(
-                top: Radius.circular(borderRadius),
-              ),
-              border: Border.all(
-                color: isDark
-                    ? Colors.white.withValues(alpha: .18)
-                    : Colors.white.withValues(alpha: .95),
-                width: 1.2,
-              ),
-            ),
-            child: Padding(
-              padding: padding ?? const EdgeInsets.all(AppSpacing.lg),
-              child: child,
-            ),
-          ),
+        child: beautify
+            ? BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                child: _sheetInner(isDark),
+              )
+            : _sheetInner(isDark),
+      ),
+    );
+  }
+
+  Widget _sheetInner(bool isDark) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: isDark
+            ? const Color(0xFF141822).withValues(alpha: .92)
+            : Colors.white.withValues(alpha: .96),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(borderRadius),
         ),
+        border: Border.all(
+          color: isDark
+              ? Colors.white.withValues(alpha: .18)
+              : Colors.white.withValues(alpha: .95),
+          width: 1.2,
+        ),
+      ),
+      child: Padding(
+        padding: padding ?? const EdgeInsets.all(AppSpacing.lg),
+        child: child,
       ),
     );
   }

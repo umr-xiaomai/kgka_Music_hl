@@ -420,6 +420,7 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
     final size = MediaQuery.sizeOf(context);
     final maxDim = math.max(size.width, size.height);
     final bgDim = maxDim.clamp(300.0, 900.0);
+    final beautify = ThemeController.instance.uiBeautificationEnabled;
 
     // 旋转动画背景是纯装饰性的，排除语义树防止 Windows AXTree 竞态崩溃
     return ExcludeSemantics(
@@ -436,17 +437,27 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
                 child: RotationTransition(
                   turns: _rotationController,
                   child: RepaintBoundary(
-                    child: ImageFiltered(
-                      imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-                      child: Image.network(
-                        coverUrl,
-                        fit: BoxFit.cover,
-                        cacheWidth: 360,
-                        cacheHeight: 360,
-                        errorBuilder: (context, error, stackTrace) =>
-                            const SizedBox.shrink(),
-                      ),
-                    ),
+                    child: beautify
+                        ? ImageFiltered(
+                            imageFilter:
+                                ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                            child: Image.network(
+                              coverUrl,
+                              fit: BoxFit.cover,
+                              cacheWidth: 360,
+                              cacheHeight: 360,
+                              errorBuilder: (context, error, stackTrace) =>
+                                  const SizedBox.shrink(),
+                            ),
+                          )
+                        : Image.network(
+                            coverUrl,
+                            fit: BoxFit.cover,
+                            cacheWidth: 360,
+                            cacheHeight: 360,
+                            errorBuilder: (context, error, stackTrace) =>
+                                const SizedBox.shrink(),
+                          ),
                   ),
                 ),
               ),
@@ -1968,7 +1979,10 @@ class _LyricViewportState extends State<_LyricViewport> {
       child: BlurredLyricView(
         controller: _lyricController,
         style: lyricStyle,
-        maxBlurSigma: _lyricBlurSigma,
+        maxBlurSigma:
+              ThemeController.instance.uiBeautificationEnabled
+                  ? _lyricBlurSigma
+                  : 0,
         blurStep: _lyricBlurStep,
       ),
     );

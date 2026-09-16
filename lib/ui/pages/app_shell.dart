@@ -705,6 +705,65 @@ class _LiquidGlassBottomBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final beautify = ThemeController.instance.uiBeautificationEnabled;
+
+    final barSurface = DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(100),
+        // iOS 26 极透微光物理透镜折射渐变
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: isDark
+              ? beautify
+                  ? [
+                      const Color(0xFF1E2433).withValues(alpha: .52),
+                      const Color(0xFF10141D).withValues(alpha: .36),
+                    ]
+                  : [
+                      const Color(0xFF1E2433).withValues(alpha: .88),
+                      const Color(0xFF10141D).withValues(alpha: .76),
+                    ]
+              : beautify
+                  ? [
+                      Colors.white.withValues(alpha: .52),
+                      Colors.white.withValues(alpha: .26),
+                    ]
+                  : [
+                      Colors.white.withValues(alpha: .96),
+                      Colors.white.withValues(alpha: .92),
+                    ],
+        ),
+        border: Border.all(
+          color: isDark
+              ? Colors.white.withValues(alpha: .22)
+              : Colors.white.withValues(alpha: .92),
+          width: 1.1,
+        ),
+      ),
+      child: Row(
+        children: [
+          _LiquidNavItem(
+            icon: Icons.home_outlined,
+            activeIcon: Icons.home_rounded,
+            label: '首页',
+            isSelected: currentIndex == 0,
+            onTap: () => onTap(0),
+          ),
+          _CenterPlayerDisc(
+            player: player,
+            onOpenPlayer: onOpenPlayer,
+          ),
+          _LiquidNavItem(
+            icon: Icons.person_outline_rounded,
+            activeIcon: Icons.person_rounded,
+            label: '我的',
+            isSelected: currentIndex == 1,
+            onTap: () => onTap(1),
+          ),
+        ],
+      ),
+    );
 
     return RepaintBoundary(
       child: Align(
@@ -749,56 +808,12 @@ class _LiquidGlassBottomBar extends StatelessWidget {
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(100),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(100),
-                  // iOS 26 极透微光物理透镜折射渐变
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: isDark
-                        ? [
-                            const Color(0xFF1E2433).withValues(alpha: .52),
-                            const Color(0xFF10141D).withValues(alpha: .36),
-                          ]
-                        : [
-                            Colors.white.withValues(alpha: .52),
-                            Colors.white.withValues(alpha: .26),
-                          ],
-                  ),
-                  border: Border.all(
-                    color: isDark
-                        ? Colors.white.withValues(alpha: .22)
-                        : Colors.white.withValues(alpha: .92),
-                    width: 1.1,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    _LiquidNavItem(
-                      icon: Icons.home_outlined,
-                      activeIcon: Icons.home_rounded,
-                      label: '首页',
-                      isSelected: currentIndex == 0,
-                      onTap: () => onTap(0),
-                    ),
-                    _CenterPlayerDisc(
-                      player: player,
-                      onOpenPlayer: onOpenPlayer,
-                    ),
-                    _LiquidNavItem(
-                      icon: Icons.person_outline_rounded,
-                      activeIcon: Icons.person_rounded,
-                      label: '我的',
-                      isSelected: currentIndex == 1,
-                      onTap: () => onTap(1),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+            child: beautify
+                ? BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                    child: barSurface,
+                  )
+                : barSurface,
           ),
         ),
       ),

@@ -172,7 +172,10 @@ class _BlurredLyricPainter extends LyricPainter {
     bool isInAnchorArea,
   ) {
     final distance = (index - playIndex).abs();
-    final shouldStaySharp = distance == 0 || (isSelecting && isInAnchorArea);
+    final shouldStaySharp =
+        maxBlurSigma <= 0 ||
+        distance == 0 ||
+        (isSelecting && isInAnchorArea);
     if (shouldStaySharp) {
       super.drawLine(canvas, metric, size, index, isInAnchorArea);
       return;
