@@ -1,6 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import '../controllers/theme_controller.dart';
+import '../../controllers/theme_controller.dart';
 import '../design_tokens.dart';
 
 /// 全局流体极光氛围底层背景（iOS 26 Ambient Mesh Background）。
