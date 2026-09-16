@@ -394,14 +394,21 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
     _rotationController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 40),
-    )..repeat();
+    );
+    // UI 美化关闭时背景旋转同步停用，避免 ticker 空转
+    if (ThemeController.instance.uiBeautificationEnabled) {
+      _rotationController.repeat();
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      if (!_rotationController.isAnimating) _rotationController.repeat();
+      if (ThemeController.instance.uiBeautificationEnabled &&
+          !_rotationController.isAnimating) {
+        _rotationController.repeat();
+      }
     } else {
       if (_rotationController.isAnimating) _rotationController.stop();
     }
@@ -421,6 +428,12 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
     final maxDim = math.max(size.width, size.height);
     final bgDim = maxDim.clamp(300.0, 900.0);
     final beautify = ThemeController.instance.uiBeautificationEnabled;
+    // 开关实时切换时同步启停旋转动画（build 内同步装饰性 controller，安全）
+    if (beautify) {
+      if (!_rotationController.isAnimating) _rotationController.repeat();
+    } else if (_rotationController.isAnimating) {
+      _rotationController.stop();
+    }
 
     // 旋转动画背景是纯装饰性的，排除语义树防止 Windows AXTree 竞态崩溃
     return ExcludeSemantics(
@@ -429,7 +442,9 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
         children: [
           // 始终显示渐变兜底背景，避免封面加载期间出现纯黑背景
           const _FallbackBackground(),
-          if (coverUrl != null)
+          // UI 美化关闭时完全不绘制封面背景（不加载图、不旋转、不模糊），
+          // 直接落在 _FallbackBackground 的原始无图背景上，保证流畅
+          if (coverUrl != null && beautify)
             Center(
               child: SizedBox(
                 width: bgDim,
@@ -437,27 +452,17 @@ class _ArtworkBackgroundState extends State<_ArtworkBackground>
                 child: RotationTransition(
                   turns: _rotationController,
                   child: RepaintBoundary(
-                    child: beautify
-                        ? ImageFiltered(
-                            imageFilter:
-                                ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-                            child: Image.network(
-                              coverUrl,
-                              fit: BoxFit.cover,
-                              cacheWidth: 360,
-                              cacheHeight: 360,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  const SizedBox.shrink(),
-                            ),
-                          )
-                        : Image.network(
-                            coverUrl,
-                            fit: BoxFit.cover,
-                            cacheWidth: 360,
-                            cacheHeight: 360,
-                            errorBuilder: (context, error, stackTrace) =>
-                                const SizedBox.shrink(),
-                          ),
+                    child: ImageFiltered(
+                      imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                      child: Image.network(
+                        coverUrl,
+                        fit: BoxFit.cover,
+                        cacheWidth: 360,
+                        cacheHeight: 360,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const SizedBox.shrink(),
+                      ),
+                    ),
                   ),
                 ),
               ),
