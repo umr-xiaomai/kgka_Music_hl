@@ -120,7 +120,7 @@ class PlayerController extends ChangeNotifier {
       _maybeSyncDesktopLyricFromPosition();
       _syncSuperLyricFromPosition();
       _syncBluetoothLyricsFromPosition();
-      notifyListeners();
+      // position 高频变化仅推送到 positionNotifier，避免全量广播触发整页 rebuild
     });
     // Send timing anchors; Android animates karaoke progress at display refresh.
     SchedulerBinding.instance.addPersistentFrameCallback((_) {
@@ -232,6 +232,11 @@ class PlayerController extends ChangeNotifier {
   List<LyricLine> lyrics = const [];
   PlaybackMode playbackMode = PlaybackMode.playlistLoop;
   Duration position = Duration.zero;
+
+  /// 播放进度的高频通道。position 每 ~200ms 随音频 tick 变化，
+  /// 若走 notifyListeners 会让所有订阅者全量 rebuild；改为独立
+  /// ValueNotifier 后，只有进度条/时间等真正需要 position 的 UI 订阅它。
+  final ValueNotifier<Duration> positionNotifier = ValueNotifier(Duration.zero);
   Duration duration = Duration.zero;
   bool isPlaying = false;
   bool isBuffering = false;
@@ -2209,7 +2214,9 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _setPositionBase(Duration value, {required bool playing}) {
-    position = _clampPosition(value);
+    final clamped = _clampPosition(value);
+    position = clamped;
+    positionNotifier.value = clamped;
     _positionClock
       ..stop()
       ..reset();
@@ -2310,6 +2317,7 @@ class PlayerController extends ChangeNotifier {
     queue = List<Song>.of(songs);
     currentSong = songs.first;
     position = Duration.zero;
+    positionNotifier.value = Duration.zero;
     notifyListeners();
   }
 
@@ -2361,6 +2369,7 @@ class PlayerController extends ChangeNotifier {
     final posMs = prefs.getInt(_currentPositionKey);
     if (posMs != null && posMs > 0) {
       position = Duration(milliseconds: posMs);
+      positionNotifier.value = position;
     }
 
     notifyListeners();

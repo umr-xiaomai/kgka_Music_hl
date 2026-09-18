@@ -2294,117 +2294,119 @@ class _Progress extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: player,
-      builder: (context, _) {
-        final max = player.duration.inMilliseconds <= 0
-            ? 1.0
-            : player.duration.inMilliseconds.toDouble();
-        final value = player.smoothPosition.inMilliseconds
-            .clamp(0, max.toInt())
-            .toDouble();
-        final textColor = bright
-            ? Colors.white.withValues(alpha: .64)
-            : Theme.of(context).colorScheme.onSurfaceVariant;
-        // 高潮片段时间点（进度条小圆点），无高潮或无效时为空。
-        final climax = player.climax;
-        final climaxFraction = climax != null &&
-                climax.isValid &&
-                max > 0 &&
-                climax.startTime.inMilliseconds <= max.toInt()
-            ? climax.startTime.inMilliseconds / max
-            : null;
+    // 进度高频变化：仅订阅 positionNotifier 重建本组件，
+    // 不依赖外层 AnimatedBuilder(player) 的全量广播。
+    return ValueListenableBuilder<Duration>(
+      valueListenable: player.positionNotifier,
+      builder: (context, position, _) {
+    final max = player.duration.inMilliseconds <= 0
+        ? 1.0
+        : player.duration.inMilliseconds.toDouble();
+    final value = position.inMilliseconds
+        .clamp(0, max.toInt())
+        .toDouble();
+    final textColor = bright
+        ? Colors.white.withValues(alpha: .64)
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    // 高潮片段时间点（进度条小圆点），无高潮或无效时为空。
+    final climax = player.climax;
+    final climaxFraction = climax != null &&
+            climax.isValid &&
+            max > 0 &&
+            climax.startTime.inMilliseconds <= max.toInt()
+        ? climax.startTime.inMilliseconds / max
+        : null;
 
-        return Column(
-          children: [
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final width = constraints.maxWidth;
-                final thumbRadius = compact ? 4.0 : 5.0;
-                final dotSize = compact ? 7.0 : 8.0;
-                return Stack(
-                  alignment: Alignment.centerLeft,
-                  children: [
-                    SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        trackHeight: compact ? 3 : 5,
-                        thumbShape: RoundSliderThumbShape(
-                          enabledThumbRadius: compact ? 4 : 5,
-                        ),
-                        overlayShape: RoundSliderOverlayShape(
-                          overlayRadius: compact ? 10 : 14,
-                        ),
-                        activeTrackColor: bright
-                            ? Colors.white.withValues(alpha: .86)
-                            : Theme.of(context).colorScheme.primary,
-                        inactiveTrackColor: bright
-                            ? Colors.white.withValues(alpha: .25)
-                            : Theme.of(context).colorScheme.surfaceContainerHighest,
-                        thumbColor: Colors.white,
-                      ),
-                      child: Slider(
-                        value: value,
-                        max: max,
-                        onChanged: (value) =>
-                            player.previewSeek(
-                                Duration(milliseconds: value.round())),
-                        onChangeEnd: (value) =>
-                            player.seek(Duration(milliseconds: value.round())),
-                      ),
+    return Column(
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth;
+            final thumbRadius = compact ? 4.0 : 5.0;
+            final dotSize = compact ? 7.0 : 8.0;
+            return Stack(
+              alignment: Alignment.centerLeft,
+              children: [
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: compact ? 3 : 5,
+                    thumbShape: RoundSliderThumbShape(
+                      enabledThumbRadius: compact ? 4 : 5,
                     ),
-                    if (climaxFraction != null)
-                      Positioned(
-                        left: thumbRadius +
-                            climaxFraction * (width - 2 * thumbRadius) -
-                            dotSize / 2,
-                        top: 24 - dotSize / 2,
-                        child: IgnorePointer(
-                          child: Container(
-                            width: dotSize,
-                            height: dotSize,
-                            decoration: BoxDecoration(
-                              color: bright
-                                  ? Colors.white
-                                  : Theme.of(context).colorScheme.primary,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: bright
-                                    ? Colors.black.withValues(alpha: .4)
-                                    : Colors.white,
-                                width: 1.2,
-                              ),
-                            ),
+                    overlayShape: RoundSliderOverlayShape(
+                      overlayRadius: compact ? 10 : 14,
+                    ),
+                    activeTrackColor: bright
+                        ? Colors.white.withValues(alpha: .86)
+                        : Theme.of(context).colorScheme.primary,
+                    inactiveTrackColor: bright
+                        ? Colors.white.withValues(alpha: .25)
+                        : Theme.of(context).colorScheme.surfaceContainerHighest,
+                    thumbColor: Colors.white,
+                  ),
+                  child: Slider(
+                    value: value,
+                    max: max,
+                    onChanged: (value) =>
+                        player.previewSeek(
+                            Duration(milliseconds: value.round())),
+                    onChangeEnd: (value) =>
+                        player.seek(Duration(milliseconds: value.round())),
+                  ),
+                ),
+                if (climaxFraction != null)
+                  Positioned(
+                    left: thumbRadius +
+                        climaxFraction * (width - 2 * thumbRadius) -
+                        dotSize / 2,
+                    top: 24 - dotSize / 2,
+                    child: IgnorePointer(
+                      child: Container(
+                        width: dotSize,
+                        height: dotSize,
+                        decoration: BoxDecoration(
+                          color: bright
+                              ? Colors.white
+                              : Theme.of(context).colorScheme.primary,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: bright
+                                ? Colors.black.withValues(alpha: .4)
+                                : Colors.white,
+                            width: 1.2,
                           ),
                         ),
                       ),
-                  ],
-                );
-              },
-            ),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: compact ? 2 : 4),
-              child: Row(
-                children: [
-                  Text(
-                    formatDuration(player.smoothPosition),
-                    style: TextStyle(
-                      color: textColor,
-                      fontSize: compact ? 12 : null,
                     ),
                   ),
-                  const Spacer(),
-                  Text(
-                    formatDuration(player.duration),
-                    style: TextStyle(
-                      color: textColor,
-                      fontSize: compact ? 12 : null,
-                    ),
-                  ),
-                ],
+              ],
+            );
+          },
+        ),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: compact ? 2 : 4),
+          child: Row(
+            children: [
+              Text(
+                formatDuration(position),
+                style: TextStyle(
+                  color: textColor,
+                  fontSize: compact ? 12 : null,
+                ),
               ),
-            ),
-          ],
-        );
+              const Spacer(),
+              Text(
+                formatDuration(player.duration),
+                style: TextStyle(
+                  color: textColor,
+                  fontSize: compact ? 12 : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
       },
     );
   }
