@@ -489,15 +489,17 @@ class Song {
           asString(json['singer_name']),
     );
     final artistName = artists.map((artist) => artist.name).join(' / ');
+    // 酷狗返回的 OriSongName 是不带歌手的原始歌名，Suffix 为「(Live)」等版本
+    // 后缀；后缀为空时直接使用歌名本身，避免出现多余空格。
+    var title = asString(json['OriSongName']);
+    final suffix = asString(json['Suffix']) ?? '';
+    if (title != null && suffix.isNotEmpty) {
+      title = '$title $suffix';
+    }
 
     return Song(
       id: songId ?? hash,
-      title:
-          asString(json['FileName']) ??
-          asString(json['songname']) ??
-          asString(json['name']) ??
-          asString(json['audio_name']) ??
-          '未知歌曲',
+      title: title ?? '未知歌曲',
       artist: artistName.isNotEmpty
           ? artistName
           : asString(json['SingerName']) ??
