@@ -116,11 +116,6 @@ class _MiniPlayerState extends State<MiniPlayer>
             return const SizedBox.shrink();
           }
 
-          final durationMs = widget.player.duration.inMilliseconds;
-          final positionMs = widget.player.position.inMilliseconds;
-          final progress = (durationMs > 0 ? (positionMs / durationMs) : 0.0)
-              .clamp(0.0, 1.0);
-
           return Align(
             alignment: Alignment.bottomCenter,
             child: Container(
@@ -195,17 +190,32 @@ class _MiniPlayerState extends State<MiniPlayer>
                             alignment: Alignment.center,
                             children: [
                               // 1. 外圈环形播放进度条（仅显示已播放进度弧线）
-                              SizedBox.square(
-                                dimension: 46,
-                                child: CircularProgressIndicator(
-                                  value: progress,
-                                  strokeWidth: 2.2,
-                                  strokeCap: StrokeCap.round,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    colorScheme.primary,
-                                  ),
-                                  backgroundColor: Colors.transparent,
-                                ),
+                              // 高频 position 独立订阅，迷你播放器不随进度全量重建
+                              ValueListenableBuilder<Duration>(
+                                valueListenable:
+                                    widget.player.positionNotifier,
+                                builder: (context, position, _) {
+                                  final durationMs =
+                                      widget.player.duration.inMilliseconds;
+                                  final positionMs = position.inMilliseconds;
+                                  final progress = (durationMs > 0
+                                          ? (positionMs / durationMs)
+                                          : 0.0)
+                                      .clamp(0.0, 1.0);
+                                  return SizedBox.square(
+                                    dimension: 46,
+                                    child: CircularProgressIndicator(
+                                      value: progress,
+                                      strokeWidth: 2.2,
+                                      strokeCap: StrokeCap.round,
+                                      valueColor:
+                                          AlwaysStoppedAnimation<Color>(
+                                        colorScheme.primary,
+                                      ),
+                                      backgroundColor: Colors.transparent,
+                                    ),
+                                  );
+                                },
                               ),
                               // 2. 内部黑胶唱片/专辑封面
                               Container(
