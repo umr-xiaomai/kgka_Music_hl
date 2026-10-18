@@ -64,6 +64,23 @@ class AdaptiveLayout {
         : maxWidth;
     return (effectiveWidth / minItemWidth).floor().clamp(2, 8);
   }
+
+  /// 手表等极小屏的判定阈值（逻辑像素）。
+  ///
+  /// Wear OS 手表的逻辑尺寸常见为 192dp~300dp（例如 450px @2x ≈ 225dp），
+  /// 明显小于最窄的手机（320dp），所以用 `shortestSide` 就能安全区分：
+  /// 320dp 及以上仍按普通手机处理，不会被误判。
+  static const double watchBreakpoint = 300;
+
+  /// 给定的屏幕尺寸是否属于手表等极小屏。
+  static bool isWatchSize(Size size) => size.shortestSide < watchBreakpoint;
+
+  /// 当前界面是否运行在手表等极小屏上。
+  ///
+  /// 极小屏上一屏放不下播放页的全部内容（封面 + 歌词预览 + 进度 + 控件），
+  /// 必须切换成纵向滚动 + 压缩尺寸的布局，否则会出现"显示不全且滑不动"。
+  static bool isWatch(BuildContext context) =>
+      isWatchSize(MediaQuery.sizeOf(context));
 }
 
 /// 自适应内容内边距。

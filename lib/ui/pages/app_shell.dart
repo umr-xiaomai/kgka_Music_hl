@@ -99,11 +99,16 @@ class _AppShellState extends State<AppShell>
   }
 
   Widget _buildPlayerOverlay() {
+    // 手表等极小屏上左缘手势条按比例收窄，否则 60dp 会吞掉近 1/3 屏宽的
+    // 触摸事件，导致播放页中部竖滑失效（内容看着"滑不动"）。
+    final isWatch = AdaptiveLayout.isWatch(context);
     // 左缘手势条起点：TopBar（SafeArea + 8 padding + 48 按钮）之下，
     // 避免 opaque 条遮挡播放页左上角返回按钮。
-    final topBarBottom = MediaQuery.paddingOf(context).top + 64;
+    final topBarBottom =
+        MediaQuery.paddingOf(context).top + (isWatch ? 40 : 64);
     // 底部留出控制按钮与歌词缩放按钮区域，避免 opaque 条遮挡点击。
-    final bottomControlsHeight = MediaQuery.paddingOf(context).bottom + 96;
+    final bottomControlsHeight =
+        MediaQuery.paddingOf(context).bottom + (isWatch ? 48 : 96);
     return Stack(
       children: [
         SlideTransition(
@@ -137,7 +142,7 @@ class _AppShellState extends State<AppShell>
           left: 0,
           top: topBarBottom,
           bottom: bottomControlsHeight,
-          width: 60,
+          width: isWatch ? 24 : 60,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onHorizontalDragStart: (details) {

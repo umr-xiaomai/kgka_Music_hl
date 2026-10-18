@@ -1,0 +1,62 @@
+name: Flutter Analyze & Build Check
+
+# 轻量 CI：不本地编译，交给 GitHub Actions 验证改动是否可以编译通过。
+#   - analyze：静态分析，最快暴露语法/类型错误
+#   - build-android：真正跑一次 Android 打包，确认能编译出产物
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: flutter analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Disable analytics
+        run: flutter config --no-analytics
+      - name: Pub get
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+  build-android:
+    name: flutter build apk (debug)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Disable analytics
+        run: flutter config --no-analytics
+      - name: Pub get
+        run: flutter pub get
+      - name: Build debug APK
+        run: flutter build apk --debug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kgka-music-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: warn
+          retention-days: 7
