@@ -8,6 +8,7 @@ import '../../controllers/player_controller.dart';
 import '../../models/music_models.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
+import '../widgets/expandable_intro.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/marquee_text.dart';
@@ -245,6 +246,16 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
                       ),
                     )
                   else ...[
+                    if (_detail?.introText case final intro?)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: ExpandableIntroCard(
+                            title: '歌手介绍',
+                            text: intro,
+                          ),
+                        ),
+                      ),
                     if (_albums.isNotEmpty)
                       SliverToBoxAdapter(
                         child: _ArtistAlbumSection(

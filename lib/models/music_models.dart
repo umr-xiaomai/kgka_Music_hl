@@ -420,6 +420,28 @@ class PlaylistSummary {
       'musiclibId': musiclibId,
     };
   }
+
+  /// 仅替换封面的副本（专辑详情补齐封面后用）。
+  PlaylistSummary copyWithCover(String? coverUrl) {
+    return PlaylistSummary(
+      id: id,
+      title: title,
+      subtitle: subtitle,
+      coverUrl: coverUrl ?? this.coverUrl,
+      songCount: songCount,
+      playCount: playCount,
+      isDefault: isDefault,
+      creatorName: creatorName,
+      creatorUserId: creatorUserId,
+      currentUserId: currentUserId,
+      sourceGlobalId: sourceGlobalId,
+      sourceListId: sourceListId,
+      type: type,
+      source: source,
+      listId: listId,
+      musiclibId: musiclibId,
+    );
+  }
 }
 
 /// 歌曲来源平台。
@@ -1138,18 +1160,54 @@ class ArtistRef {
   final String? avatarUrl;
 }
 
+/// 歌手介绍的一个分段（`/artist/detail` 的 `long_intro` 项）。
+class ArtistIntroSection {
+  const ArtistIntroSection({required this.title, required this.content});
+
+  final String title;
+  final String content;
+}
+
 class ArtistDetail {
   const ArtistDetail({
     required this.id,
     required this.name,
     this.avatarUrl,
     this.birthday,
+    this.intro,
+    this.sections = const [],
   });
 
   final String id;
   final String name;
   final String? avatarUrl;
   final String? birthday;
+
+  /// 短简介（`intro`）。
+  final String? intro;
+
+  /// 长文本分段（`long_intro`：简介 / 基本资料 / 演艺经历 …）。
+  final List<ArtistIntroSection> sections;
+
+  /// 供页面展示的完整介绍。
+  ///
+  /// `intro` 是长文本第一段「简介」的摘要，两处都展示会明显重复，
+  /// 所以有短简介时跳过同名的「简介」分段。
+  String? get introText {
+    final parts = <String>[];
+    final short = intro?.trim();
+    final hasShort = short != null && short.isNotEmpty;
+    if (hasShort) parts.add(short);
+    for (final section in sections) {
+      final content = section.content.trim();
+      if (content.isEmpty) continue;
+      if (hasShort && section.title.trim() == '简介') continue;
+      final title = section.title.trim();
+      parts.add(title.isEmpty ? content : '$title\n$content');
+    }
+    if (parts.isEmpty) return null;
+    return parts.join('\n\n');
+  }
 
   factory ArtistDetail.fromJson(
     Map<String, dynamic> json, {
@@ -1162,6 +1220,17 @@ class ArtistDetail {
         asString(json['sizable_avatar']) ?? asString(json['avatar']),
       ),
       birthday: asString(json['birthday']),
+      intro: asString(json['intro']),
+      sections: asList(json['long_intro'])
+          .whereType<Map>()
+          .map(
+            (item) => ArtistIntroSection(
+              title: asString(asMap(item)['title']) ?? '',
+              content: asString(asMap(item)['content']) ?? '',
+            ),
+          )
+          .where((section) => section.content.isNotEmpty)
+          .toList(),
     );
   }
 }
@@ -2023,6 +2092,22 @@ String? normalizeImageUrl(String? url, {int size = 480}) {
   return normalized;
 }
 
+/// 从若干候选字段里挑第一个「能直接当图片地址用」的值。
+///
+/// 酷狗的 `cover` / `img` 字段有时只有文件名，拼不出可用地址；
+/// 这里跳过这类裸文件名，避免把 URL 传给 Image 后必然加载失败。
+String? _firstUrl(Object? first, [Object? second, Object? third, Object? fourth]) {
+  for (final value in [first, second, third, fourth]) {
+    final text = asString(value);
+    if (text == null) continue;
+    if (text.startsWith('//')) return 'https:$text';
+    if (text.startsWith('http://') || text.startsWith('https://')) {
+      return text;
+    }
+  }
+  return null;
+}
+
 String formatDuration(Duration? duration) {
   if (duration == null) {
     return '--:--';
@@ -2334,15 +2419,56 @@ class ArtistAlbum {
           asString(json['name']) ??
           asString(json['albumname']) ??
           '未知专辑',
+      // `cover` / `img` 里常常只是文件名（如 20260319xxxx.jpg），
+      // 直接当 URL 用会全部加载失败；只有 `sizable_cover` 等字段是完整地址。
       coverUrl: normalizeImageUrl(
-        asString(json['cover']) ??
-            asString(json['sizable_cover']) ??
-            asString(json['img']),
+        _firstUrl(
+          json['sizable_cover'],
+          json['flexible_cover'],
+          json['cover'],
+          json['img'],
+        ),
       ),
       authorName:
           asString(json['author_name']) ?? asString(json['singer']),
       publishDate:
           asString(json['publish_date']) ?? asString(json['publish_time']),
+      intro: asString(json['intro']),
+    );
+  }
+}
+
+/// 专辑详情（`/album/detail`）。
+class AlbumDetail {
+  const AlbumDetail({
+    required this.id,
+    required this.name,
+    this.coverUrl,
+    this.authorName,
+    this.publishDate,
+    this.intro,
+  });
+
+  final String id;
+  final String name;
+  final String? coverUrl;
+  final String? authorName;
+  final String? publishDate;
+  final String? intro;
+
+  factory AlbumDetail.fromJson(Map<String, dynamic> json) {
+    return AlbumDetail(
+      id: asString(json['album_id']) ?? asString(json['id']) ?? '',
+      name: asString(json['album_name']) ?? '未知专辑',
+      coverUrl: normalizeImageUrl(
+        _firstUrl(
+          json['sizable_cover'],
+          json['cover'],
+          json['flexible_cover'],
+        ),
+      ),
+      authorName: asString(json['author_name']),
+      publishDate: asString(json['publish_date']),
       intro: asString(json['intro']),
     );
   }

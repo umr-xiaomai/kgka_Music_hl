@@ -474,6 +474,19 @@ class MusicApi {
     return ArtistDetail.fromJson(json, id: id);
   }
 
+  /// 专辑详情（封面 / 发行日期 / 介绍）。
+  ///
+  /// 歌手页与搜索结果只拿得到专辑列表里的一行，`cover` 等字段常常残缺；
+  /// 详情页据此补齐封面并展示专辑介绍。
+  Future<AlbumDetail> albumDetail(String id) async {
+    final raw = await _client.get('/album/detail', {'id': id});
+    // ApiClient 已解包 data，正常是数组；兼容直接返回对象的情况。
+    final item = raw is List
+        ? (raw.isEmpty ? const <String, dynamic>{} : asMap(raw.first))
+        : asMap(raw);
+    return AlbumDetail.fromJson(item);
+  }
+
   Future<List<Song>> artistAudios(
     String id, {
     int page = 1,
