@@ -55,10 +55,18 @@ class _SearchPageState extends State<SearchPage> {
   List<SearchHotCategory> _hotCategories = const [];
   var _hotLoading = true;
   List<String> _suggestions = const [];
+  bool _suggestLoading = false;
   List<Song> _results = const [];
   List<ArtistAlbum> _albums = const [];
   bool _loading = false;
   bool _searched = false;
+
+  /// 最近一次真正发起搜索的关键词。
+  ///
+  /// 用来区分「输入框里是新词」和「已经搜过这个词」：用户改了关键词但还没
+  /// 点搜索时，不应该继续展示上一次的旧结果，而是回到联想词列表。
+  String _lastSearchedKeyword = '';
+
   _SearchPlatform _platform = _SearchPlatform.kugou;
   _SearchType _type = _SearchType.song;
 
@@ -119,11 +127,22 @@ class _SearchPageState extends State<SearchPage> {
     if (text.isEmpty) {
       setState(() {
         _suggestions = const [];
+        _suggestLoading = false;
         _results = const [];
         _albums = const [];
         _searched = false;
+        _lastSearchedKeyword = '';
       });
       return;
+    }
+    // 输入变化后旧结果已经过期：清掉「已搜索」状态，界面回到联想词，
+    // 避免用户改了关键词却还盯着上一轮搜索结果。
+    if (_searched && text != _lastSearchedKeyword) {
+      setState(() {
+        _searched = false;
+        _results = const [];
+        _albums = const [];
+      });
     }
     _debounce = Timer(const Duration(milliseconds: 300), () {
       _fetchSuggestions(text);
@@ -131,12 +150,24 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Future<void> _fetchSuggestions(String keywords) async {
+    setState(() => _suggestLoading = true);
     try {
       final suggestions = await widget.api.searchSuggest(keywords);
+      // 请求返回时输入框可能已经变了，丢弃过期联想词
       if (mounted && _controller.text.trim() == keywords) {
-        setState(() => _suggestions = suggestions);
+        setState(() {
+          _suggestions = suggestions;
+          _suggestLoading = false;
+        });
       }
-    } catch (_) {}
+    } catch (_) {
+      if (mounted && _controller.text.trim() == keywords) {
+        setState(() {
+          _suggestions = const [];
+          _suggestLoading = false;
+        });
+      }
+    }
   }
 
   Future<void> _search(String keywords) async {
@@ -149,7 +180,9 @@ class _SearchPageState extends State<SearchPage> {
     setState(() {
       _loading = true;
       _suggestions = const [];
+      _suggestLoading = false;
       _searched = true;
+      _lastSearchedKeyword = keywords;
     });
     try {
       if (_type == _SearchType.album) {
@@ -353,7 +386,9 @@ class _SearchPageState extends State<SearchPage> {
         ),
         const SizedBox(width: 12),
         ElevatedButton(
-          onPressed: _onSubmit,
+          onPressed: _controller.text.trim().isNotEmpty
+              ? _onSubmit
+              : () => Navigator.of(context).pop(),
           style: ElevatedButton.styleFrom(
             backgroundColor: colorScheme.primary,
             foregroundColor: colorScheme.onPrimary,
@@ -362,9 +397,9 @@ class _SearchPageState extends State<SearchPage> {
               borderRadius: BorderRadius.circular(AppRadius.xxl),
             ),
           ),
-          child: const Text(
-            '搜索',
-            style: TextStyle(fontWeight: FontWeight.bold),
+          child: Text(
+            _controller.text.trim().isNotEmpty ? '搜索' : '取消',
+            style: const TextStyle(fontWeight: FontWeight.bold),
           ),
         ),
       ],
@@ -437,10 +472,22 @@ class _SearchPageState extends State<SearchPage> {
                         minWidth: 36,
                         minHeight: 38,
                       ),
-                      prefixIcon: Icon(
-                        Icons.search_rounded,
-                        color: colorScheme.onSurfaceVariant,
-                        size: 20,
+                      // 搜索按钮：点一下即用当前输入主动发起搜索，
+                      // 与键盘上的「搜索」键、回车行为一致。
+                      prefixIcon: IconButton(
+                        icon: Icon(
+                          Icons.search_rounded,
+                          color: colorScheme.onSurfaceVariant,
+                          size: 20,
+                        ),
+                        padding: EdgeInsets.zero,
+                        splashRadius: 16,
+                        tooltip: '搜索',
+                        constraints: const BoxConstraints(
+                          minWidth: 36,
+                          minHeight: 38,
+                        ),
+                        onPressed: _onSubmit,
                       ),
                       suffixIconConstraints: const BoxConstraints(
                         minWidth: 36,
@@ -503,10 +550,14 @@ class _SearchPageState extends State<SearchPage> {
             ),
           ),
           actions: [
+            // 有内容时右上角是「搜索」，点一下主动发起搜索；
+            // 输入框清空后变回「取消」，点了关闭搜索页。
             TextButton(
-              onPressed: () => Navigator.of(context).pop(),
+              onPressed: _controller.text.trim().isNotEmpty
+                  ? _onSubmit
+                  : () => Navigator.of(context).pop(),
               child: Text(
-                '取消',
+                _controller.text.trim().isNotEmpty ? '搜索' : '取消',
                 style: TextStyle(
                   color: colorScheme.primary,
                   fontWeight: FontWeight.w700,
@@ -565,7 +616,12 @@ class _SearchPageState extends State<SearchPage> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_searched && text.isNotEmpty) {
+    // 只有输入框内容与上次搜索词一致时才展示结果，否则回到联想词，
+    // 保证「改了词就能看到新的联想词」而不是停留在旧结果上。
+    final showResults =
+        _searched && text.isNotEmpty && text == _lastSearchedKeyword;
+
+    if (showResults) {
       if (_type == _SearchType.album) {
         return _albums.isEmpty
             ? _EmptyResults(keyword: text)
@@ -737,11 +793,157 @@ class _SearchPageState extends State<SearchPage> {
       );
     }
 
-    if (_suggestions.isNotEmpty) {
-      return _SuggestionList(suggestions: _suggestions, onTap: _onKeywordTap);
+    if (_suggestLoading && _suggestions.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 24),
+        child: Center(
+          child: SizedBox.square(
+            dimension: 22,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
     }
 
-    return const SizedBox.shrink();
+    // 联想词列表：首行固定给出「搜索 <关键词>」，即使接口没返回联想词，
+    // 也能明确地主动发起搜索；其余行点击后填入并直接搜索。
+    return _SuggestionList(
+      keyword: text,
+      suggestions: _suggestions,
+      onTap: _onKeywordTap,
+      onSubmit: _onSubmit,
+    );
+  }
+}
+
+/// 联想词列表。
+///
+/// 交互：点击任意一行 → 填入该词并立即搜索；首行永远是当前输入词本身，
+/// 用于在接口没给联想词时也能直接搜索。
+class _SuggestionList extends StatelessWidget {
+  const _SuggestionList({
+    required this.keyword,
+    required this.suggestions,
+    required this.onTap,
+    required this.onSubmit,
+  });
+
+  final String keyword;
+  final List<String> suggestions;
+  final ValueChanged<String> onTap;
+  final VoidCallback onSubmit;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    // 去掉与输入词完全相同的联想词，避免首行重复
+    final items = suggestions
+        .where((item) => item.trim() != keyword)
+        .toList(growable: false);
+
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(0, 4, 0, 160),
+      itemCount: items.length + 1,
+      separatorBuilder: (_, _) => Divider(
+        height: 1,
+        indent: 58,
+        color: colorScheme.outlineVariant.withValues(alpha: .4),
+      ),
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return ListTile(
+            leading: Icon(Icons.search_rounded, color: colorScheme.primary),
+            title: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: '搜索 ',
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  TextSpan(
+                    text: keyword,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: colorScheme.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: Icon(
+              Icons.arrow_forward_rounded,
+              size: 18,
+              color: colorScheme.onSurfaceVariant,
+            ),
+            onTap: onSubmit,
+          );
+        }
+        final item = items[index - 1];
+        return ListTile(
+          leading: Icon(
+            Icons.search_rounded,
+            color: colorScheme.onSurfaceVariant,
+          ),
+          title: _HighlightedKeyword(text: item, keyword: keyword),
+          onTap: () => onTap(item),
+        );
+      },
+    );
+  }
+}
+
+/// 联想词文本：命中关键词的片段用主题色加粗，方便一眼看清补全内容。
+class _HighlightedKeyword extends StatelessWidget {
+  const _HighlightedKeyword({required this.text, required this.keyword});
+
+  final String text;
+  final String keyword;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final base = theme.textTheme.bodyLarge?.copyWith(
+      fontWeight: FontWeight.w600,
+    );
+    final lowerText = text.toLowerCase();
+    final lowerKeyword = keyword.toLowerCase();
+    final index = lowerKeyword.isEmpty
+        ? -1
+        : lowerText.indexOf(lowerKeyword);
+
+    if (index < 0) {
+      return Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: base,
+      );
+    }
+
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(text: text.substring(0, index), style: base),
+          TextSpan(
+            text: text.substring(index, index + keyword.length),
+            style: base?.copyWith(
+              color: colorScheme.primary,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          TextSpan(text: text.substring(index + keyword.length), style: base),
+        ],
+      ),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
   }
 }
 
@@ -1161,45 +1363,6 @@ class _CategoryKeywordList extends StatelessWidget {
   }
 }
 
-class _SuggestionList extends StatelessWidget {
-  const _SuggestionList({required this.suggestions, required this.onTap});
-
-  final List<String> suggestions;
-  final ValueChanged<String> onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(0, 4, 0, 160),
-      itemCount: suggestions.length,
-      separatorBuilder: (_, _) => Divider(
-        height: 1,
-        indent: 62,
-        color: colorScheme.outlineVariant.withValues(alpha: .4),
-      ),
-      itemBuilder: (context, index) {
-        final keyword = suggestions[index];
-        return ListTile(
-          leading: Icon(
-            Icons.search_rounded,
-            color: colorScheme.onSurfaceVariant,
-          ),
-          title: Text(
-            keyword,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(
-              context,
-            ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-          ),
-          onTap: () => onTap(keyword),
-        );
-      },
-    );
-  }
-}
-
 /// 专辑搜索结果列表。
 class _AlbumResults extends StatelessWidget {
   const _AlbumResults({
@@ -1450,8 +1613,11 @@ class _SearchResults extends StatelessWidget {
                                     icon: Icons.info_outline_rounded,
                                     title: '详细信息',
                                     subtitle: '专辑、发行日期、时长、音源',
-                                    onTap: () =>
-                                        openSongDetailPage(context, song),
+                                    onTap: () => openSongDetailPage(
+                                      context,
+                                      song,
+                                      api: player.api,
+                                    ),
                                   ),
                                   if (player.downloadController != null)
                                     SongSheetAction(

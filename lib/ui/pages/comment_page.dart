@@ -635,32 +635,92 @@ void _showImage(BuildContext context, String url) {
     context: context,
     barrierColor: Colors.black87,
     builder: (dialogContext) {
+      final viewSize = MediaQuery.sizeOf(dialogContext);
+      final devicePixelRatio = MediaQuery.devicePixelRatioOf(dialogContext);
+      // 放大到 4 倍仍要清晰：按屏幕像素宽度取图，别固定成 1024 再被拉伸发糊。
+      final cacheWidth = (viewSize.width * devicePixelRatio)
+          .round()
+          .clamp(720, 2048)
+          .toInt();
+
       return GestureDetector(
         onTap: () => Navigator.of(dialogContext).pop(),
         child: Scaffold(
           backgroundColor: Colors.transparent,
           body: SafeArea(
-            child: Center(
-              child: InteractiveViewer(
-                maxScale: 4,
-                child: RetryableNetworkImage(
-                  url: url,
-                  fit: BoxFit.contain,
-                  cacheWidth: 1024,
-                  cacheHeight: 1024,
-                  placeholderBuilder: (context) => const Icon(
-                    Icons.broken_image_outlined,
-                    color: Colors.white54,
-                    size: 48,
-                  ),
-                ),
-              ),
-            ),
+            child: _ZoomableCommentImage(url: url, cacheWidth: cacheWidth),
           ),
         ),
       );
     },
   );
+}
+
+/// 可缩放平移的评论配图。
+///
+/// `InteractiveViewer` 本身铺满视口，缩放锚点才落在手指位置；
+/// 图片用 `BoxFit.contain` 居中绘制在视口内。若把没有尺寸约束的图片直接
+/// 塞进 `InteractiveViewer`，它会撑成图片原始尺寸（如 1024x1024），
+/// 缩放中心落在可视区之外，看起来就是「视角卡在原图没跟着放大」。
+class _ZoomableCommentImage extends StatefulWidget {
+  const _ZoomableCommentImage({required this.url, required this.cacheWidth});
+
+  final String url;
+  final int cacheWidth;
+
+  @override
+  State<_ZoomableCommentImage> createState() => _ZoomableCommentImageState();
+}
+
+class _ZoomableCommentImageState extends State<_ZoomableCommentImage> {
+  final _transformController = TransformationController();
+
+  @override
+  void dispose() {
+    _transformController.dispose();
+    super.dispose();
+  }
+
+  /// 双击在「原始比例」和「2.5 倍」之间切换，和常见看图工具一致。
+  void _toggleZoom(TapDownDetails details) {
+    final current = _transformController.value.getMaxScaleOnAxis();
+    if (current > 1.05) {
+      _transformController.value = Matrix4.identity();
+      return;
+    }
+    const scale = 2.5;
+    final position = details.localPosition;
+    _transformController.value = Matrix4.identity()
+      ..translate(-position.dx * (scale - 1), -position.dy * (scale - 1))
+      ..scale(scale);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onDoubleTapDown: _toggleZoom,
+      onDoubleTap: () {},
+      child: InteractiveViewer(
+        transformationController: _transformController,
+        minScale: 1,
+        maxScale: 4,
+        child: SizedBox.expand(
+          child: RetryableNetworkImage(
+            url: widget.url,
+            fit: BoxFit.contain,
+            cacheWidth: widget.cacheWidth,
+            placeholderBuilder: (context) => const Center(
+              child: Icon(
+                Icons.broken_image_outlined,
+                color: Colors.white54,
+                size: 48,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// 楼层回复区：展示首条回复 / 被引用内容，可展开全部回复。

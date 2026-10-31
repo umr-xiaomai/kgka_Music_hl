@@ -474,6 +474,19 @@ class MusicApi {
     return ArtistDetail.fromJson(json, id: id);
   }
 
+  /// 专辑详情（封面 / 发行日期 / 介绍）。
+  ///
+  /// 歌手页与搜索结果只拿得到专辑列表里的一行，`cover` 等字段常常残缺；
+  /// 详情页据此补齐封面并展示专辑介绍。
+  Future<AlbumDetail> albumDetail(String id) async {
+    final raw = await _client.get('/album/detail', {'id': id});
+    // ApiClient 已解包 data，正常是数组；兼容直接返回对象的情况。
+    final item = raw is List
+        ? (raw.isEmpty ? const <String, dynamic>{} : asMap(raw.first))
+        : asMap(raw);
+    return AlbumDetail.fromJson(item);
+  }
+
   Future<List<Song>> artistAudios(
     String id, {
     int page = 1,
@@ -506,14 +519,112 @@ class MusicApi {
         .toList();
   }
 
+  /// 拉取单曲的完整元信息（专辑名、发行日期、时长、封面）。
+  ///
+  /// 详情页只持有各入口解析出来的 [Song]，而部分入口（私人 FM、排行榜、
+  /// 云盘、推荐卡片等）本身不带专辑与发行信息，直接展示会全是「未知」。
+  /// 这里用 `/privilege/lite` 补齐专辑名/时长/封面，再用 `/album/detail`
+  /// 补发行日期。任一步失败都返回已拿到的部分，调用方继续用本地字段兜底。
+  Future<Song?> songDetail(Song song) async {
+    if (song.source != SongSource.kugou ||
+        song.hash.isEmpty ||
+        song.hash.startsWith('ne_')) {
+      return null;
+    }
+    final raw = await _client.get('/privilege/lite', {
+      'hash': song.hash,
+      if ((song.albumId ?? '').isNotEmpty && song.albumId != '0')
+        'album_id': song.albumId,
+    });
+    final item = raw is List
+        ? (raw.isEmpty ? const <String, dynamic>{} : asMap(raw.first))
+        : asMap(raw);
+    if (item.isEmpty) return null;
+
+    final info = asMap(item['info']);
+    final transParam = asMap(item['trans_param']);
+    final rawAlbumId = asString(item['album_id']);
+    final albumId = (rawAlbumId == null || rawAlbumId == '0')
+        ? song.albumId
+        : rawAlbumId;
+    var albumName = asString(item['albumname']) ?? song.albumName;
+    var releaseDate = song.releaseDate;
+
+    if (albumId != null &&
+        albumId.isNotEmpty &&
+        albumId != '0' &&
+        (albumName == null || releaseDate == null)) {
+      try {
+        final albumRaw = await _client.get('/album/detail', {'id': albumId});
+        final album = albumRaw is List
+            ? (albumRaw.isEmpty
+                  ? const <String, dynamic>{}
+                  : asMap(albumRaw.first))
+            : asMap(albumRaw);
+        albumName ??= asString(album['album_name']);
+        releaseDate ??= releaseDateFromString(album['publish_date']);
+      } catch (_) {
+        // 专辑详情失败不影响其它字段
+      }
+    }
+
+    return Song(
+      id: song.id,
+      title: song.title,
+      artist: asString(item['singername']) ?? song.artist,
+      hash: song.hash,
+      albumId: albumId,
+      albumAudioId:
+          asString(item['album_audio_id']) ?? song.albumAudioId,
+      albumName: albumName,
+      coverUrl: normalizeImageUrl(
+        asString(transParam['union_cover']) ??
+            asString(info['image']) ??
+            song.coverUrl,
+      ),
+      duration:
+          durationFromMilliseconds(info['duration']) ?? song.duration,
+      releaseDate: releaseDate,
+      artists: song.artists,
+      isCloudDrive: song.isCloudDrive,
+      source: song.source,
+    );
+  }
+
   Future<List<Song>> albumSongs(
     String id, {
     int page = 1,
     int pageSize = 30,
   }) async {
-    final songPage = await albumSongPage(id, page: page, pageSize: pageSize);
-    return songPage.songs;
+    // `/album/songs` 对 pagesize 有上限（超过约 50 直接返回空数组），
+    // 所以大页请求要拆成多次小页聚合，否则专辑详情会一首歌都拿不到。
+    if (pageSize <= _albumSongsMaxPageSize) {
+      final songPage = await albumSongPage(id, page: page, pageSize: pageSize);
+      return songPage.songs;
+    }
+
+    final allSongs = <Song>[];
+    var currentPage = page;
+    while (allSongs.length < pageSize) {
+      final songPage = await albumSongPage(
+        id,
+        page: currentPage,
+        pageSize: _albumSongsMaxPageSize,
+      );
+      if (songPage.songs.isEmpty) break;
+      allSongs.addAll(songPage.songs);
+      if (songPage.rawItemCount < _albumSongsMaxPageSize) break;
+      currentPage++;
+    }
+    return allSongs.length > pageSize
+        ? allSongs.sublist(0, pageSize)
+        : allSongs;
   }
+
+  /// `/album/songs` 单页最大条数。
+  ///
+  /// 实测 50 正常、51 起返回空数组，这里保守取 50。
+  static const _albumSongsMaxPageSize = 50;
 
   Future<SongPage> albumSongPage(
     String id, {
@@ -523,7 +634,7 @@ class MusicApi {
     final raw = await _client.get('/album/songs', {
       'id': id,
       'page': page,
-      'pagesize': pageSize,
+      'pagesize': pageSize.clamp(1, _albumSongsMaxPageSize),
     });
     final json = asMap(raw);
     final items = raw is List
@@ -853,23 +964,66 @@ class MusicApi {
   }
 
   Future<List<SearchHotCategory>> searchHotKeywords() async {
-    final json = asMap(await _client.get('/search/hot'));
-    return asList(json['list'])
+    final raw = await _client.get('/search/hot');
+    final json = asMap(raw);
+    // `ApiClient` 已解包 data，热词列表可能直接是数组
+    final items = raw is List
+        ? raw
+        : asList(json['list'] ?? json['data'] ?? json['hot']);
+    return items
         .whereType<Map<String, dynamic>>()
         .map(SearchHotCategory.fromJson)
         .toList();
   }
 
+  /// 搜索联想词。
+  ///
+  /// 响应原始结构是按分组组织的：`data[0].RecordDatas[].HintInfo`，
+  /// 但 [ApiClient] 已经把 `data` 解包，所以这里拿到的是分组数组本身；
+  /// 仍需兼容未解包的 `{data: [...]}` 与更早的平铺 `music` 结构。
+  ///
+  /// 后面的 MV、专辑分组会带「歌手 - 专辑」这类内容，混进搜索框会很吵，
+  /// 因此只取主分组，主分组为空时才退回其它分组兜底。
   Future<List<String>> searchSuggest(String keywords) async {
-    final json = asMap(
-      await _client.get('/search/suggest', {'keywords': keywords}),
-    );
-    final items = asList(json['music']);
-    return items
-        .whereType<Map<String, dynamic>>()
-        .map((item) => asString(item['keyword']) ?? '')
-        .where((k) => k.isNotEmpty)
+    final raw = await _client.get('/search/suggest', {'keywords': keywords});
+
+    final List groups;
+    if (raw is List) {
+      groups = raw;
+    } else {
+      final json = asMap(raw);
+      if (json['data'] is List) {
+        // 未解包的情况
+        groups = asList(json['data']);
+      } else {
+        // 兼容更早的平铺结构
+        return asList(json['music'])
+            .whereType<Map<String, dynamic>>()
+            .map((item) => asString(item['keyword']) ?? '')
+            .where((k) => k.isNotEmpty)
+            .toList();
+      }
+    }
+    if (groups.isEmpty) return const [];
+
+    List<String> readGroup(Object? group) => asList(asMap(group)['RecordDatas'])
+        .whereType<Map>()
+        .map((item) => asString(asMap(item)['HintInfo']) ?? '')
+        .where((hint) => hint.isNotEmpty)
         .toList();
+
+    final primary = readGroup(groups.first);
+    final source = primary.isNotEmpty
+        ? primary
+        : groups.skip(1).expand(readGroup).toList();
+
+    final result = <String>[];
+    final seen = <String>{};
+    for (final hint in source) {
+      // 同一关键词重复出现时只保留一次
+      if (seen.add(hint)) result.add(hint);
+    }
+    return result;
   }
 
   Future<List<Song>> searchSongs(

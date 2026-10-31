@@ -58,13 +58,17 @@ class PlaybackStats {
     'firstPlayDate': firstPlayDate?.millisecondsSinceEpoch,
   };
 
-  /// 格式化听歌时长为 "x小时y分钟" 或 "y分钟"。
+  /// 格式化听歌时长为 "x小时y分钟"、"y分钟" 或 "z秒"。
+  ///
+  /// 不足 1 分钟时显示秒数：只显示「不足1分钟」会让用户以为统计没有增长。
   String get formattedListenTime {
     final h = totalListenTime.inHours;
     final m = totalListenTime.inMinutes.remainder(60);
     if (h > 0) return '$h小时$m分钟';
     if (m > 0) return '$m分钟';
-    return '不足1分钟';
+    final seconds = totalListenTime.inSeconds;
+    if (seconds > 0) return '$seconds秒';
+    return '0秒';
   }
 
   /// 最常听歌手 Top 10。

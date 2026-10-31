@@ -1481,7 +1481,7 @@ class _TopBar extends StatelessWidget {
           icon: Icons.info_outline_rounded,
           title: '详细信息',
           subtitle: '专辑、发行年份、时长、音源',
-          onTap: () => openSongDetailPage(context, song),
+          onTap: () => openSongDetailPage(context, song, api: player.api),
         ),
         if (supportsComments(song))
           SongSheetAction(
