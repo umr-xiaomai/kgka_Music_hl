@@ -29,6 +29,67 @@ import 'local_music_controller.dart';
 
 enum PlaybackMode { playlistLoop, shuffle, singleLoop }
 
+/// 播放队列的来源（歌单 / 专辑）。
+///
+/// 只持久化队列本身不够：进程被系统回收时快照可能缺失或残缺，重启后队列
+/// 退化成单曲，点「下一首」看起来毫无反应。记住来源后，恢复时发现队列
+/// 不完整就能按来源重新拉一遍，保证切歌始终在原来的歌单里进行。
+class QueueOrigin {
+  const QueueOrigin({required this.kind, required this.id, this.title});
+
+  const QueueOrigin.playlist({required String id, String? title})
+    : this(kind: 'playlist', id: id, title: title);
+
+  const QueueOrigin.album({required String id, String? title})
+    : this(kind: 'album', id: id, title: title);
+
+  final String kind;
+  final String id;
+  final String? title;
+
+  bool get isAlbum => kind == 'album';
+
+  Map<String, dynamic> toJson() => {
+    'kind': kind,
+    'id': id,
+    if (title != null) 'title': title,
+  };
+
+  static QueueOrigin? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final map = asMap(value);
+    final kind = asString(map['kind']);
+    final id = asString(map['id']);
+    if (kind == null || id == null || id.isEmpty) return null;
+    return QueueOrigin(kind: kind, id: id, title: asString(map['title']));
+  }
+}
+
+/// 解析磁盘上保存的播放进度。
+///
+/// 新格式是 `{"hash": "...", "ms": 12345}`，只有 hash 与 [songHash] 一致
+/// 才采用，避免把上一首的位置套到新歌上；旧格式是纯 int 毫秒值，直接兼容。
+/// 返回 null 表示没有可用进度。
+Duration? parseSavedPosition(Object? raw, String? songHash) {
+  if (raw is int) {
+    return raw > 0 ? Duration(milliseconds: raw) : null;
+  }
+  if (raw is! String || raw.isEmpty) return null;
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map<String, dynamic>) return null;
+    final hash = asString(decoded['hash']);
+    final ms = asInt(decoded['ms']);
+    if (ms == null || ms <= 0) return null;
+    if (songHash != null && songHash.isNotEmpty && hash != songHash) {
+      return null;
+    }
+    return Duration(milliseconds: ms);
+  } catch (_) {
+    return null;
+  }
+}
+
 class AudioEffectPreset {
   const AudioEffectPreset({required this.name, required this.levels});
 
@@ -69,6 +130,13 @@ class PlayerController extends ChangeNotifier {
   static const _currentSongKey = 'playback.current_song';
   static const _currentPositionKey = 'playback.current_position';
   static const _playbackModeKey = 'playback.mode';
+
+  /// 播放状态快照（队列 + 当前歌曲 + 播放模式一次写入）。
+  ///
+  /// 旧实现把这几个字段拆成多次 `setString` 写入，进程在两次写入之间被杀
+  /// 就会出现「当前歌曲已保存、队列没保存」的残缺状态：重启后只剩一首歌，
+  /// 点「下一首」永远原地不动，必须重新进歌单点播才能恢复。
+  static const _stateKey = 'playback.state_snapshot';
   static const _queueSaveDebounceMs = 500;
   static const _positionSaveInterval = Duration(seconds: 5);
   static const _listenTimeReportInterval = Duration(minutes: 5);
@@ -232,6 +300,9 @@ class PlayerController extends ChangeNotifier {
   Timer? _playCacheTimer;
   DateTime? _listenTimeStartedAt;
   Duration _pendingListenTime = Duration.zero;
+
+  /// 上一次写入本地听歌统计的累计时长（用于增量落盘）。
+  Duration _lastStatsFlush = Duration.zero;
   bool _isReportingListenTime = false;
   int _seekSerial = 0;
   bool _isSeeking = false;
@@ -252,6 +323,21 @@ class PlayerController extends ChangeNotifier {
 
   Song? currentSong;
   List<Song> queue = const [];
+
+  /// 当前队列来自哪个歌单/专辑（用于重启后重建完整队列）。
+  QueueOrigin? _queueOrigin;
+
+  QueueOrigin? get queueOrigin => _queueOrigin;
+
+  /// 从磁盘恢复出来、尚未在音频引擎上生效的播放进度。
+  ///
+  /// 恢复队列时音频源还没加载，此时 seek 无效；由 [prepareRestoredSong]
+  /// 在音源加载完成后取走并真正跳转，跳完即置空。
+  Duration? _resumePosition;
+
+  /// 是否还有待应用的恢复进度（UI 可据此显示「已恢复」提示）。
+  bool get hasPendingResumePosition => _resumePosition != null;
+
   List<LyricLine> lyrics = const [];
   PlaybackMode playbackMode = PlaybackMode.playlistLoop;
   Duration position = Duration.zero;
@@ -478,6 +564,7 @@ class PlayerController extends ChangeNotifier {
     Song song, {
     List<Song>? queue,
     bool preservePersonalFmSession = false,
+    QueueOrigin? origin,
   }) async {
     final requestSerial = ++_playRequestSerial;
     debugPrint(
@@ -521,10 +608,19 @@ class PlayerController extends ChangeNotifier {
       }
     }
     currentSong = song;
+    // 用户主动点歌/切歌后，磁盘上待恢复的进度不再适用
+    _resumePosition = null;
     if (queue != null && queue.isNotEmpty) {
       this.queue = queue;
+      // 只有换了一整套队列时才更新来源；在队列内部切歌不能把来源丢掉
+      if (replacesQueue) {
+        _queueOrigin = origin;
+      } else if (origin != null) {
+        _queueOrigin = origin;
+      }
     } else if (this.queue.isEmpty) {
       this.queue = [song];
+      _queueOrigin = origin;
     }
     final songIdentity = _songIdentity(song);
     if (playbackMode == PlaybackMode.shuffle && replacesQueue) {
@@ -1217,6 +1313,9 @@ class PlayerController extends ChangeNotifier {
   Future<void> togglePlay() async {
     if (audioPlayer.playing) {
       await _audioHandler.pause();
+      // 暂停瞬间落盘一次进度：用户经常暂停后直接退出，5 秒定时器
+      // 可能还没触发，位置会停留在上一次保存点。
+      _saveCurrentPosition();
     } else {
       if (audioPlayer.processingState == ProcessingState.completed) {
         await _audioHandler.seek(Duration.zero);
@@ -1948,6 +2047,12 @@ class PlayerController extends ChangeNotifier {
     if (isForeground) {
       // 点开软件或切回前台时，重置用户本次临时关闭悬浮窗的标记，恢复自启动
       _desktopLyricsUserDismissed = false;
+    } else {
+      // 退到后台时立刻落盘一次完整队列。系统可能在任意时刻回收进程，
+      // 只依赖 500ms 防抖 + dispose 会导致「歌曲存了、队列丢了」，
+      // 重启后队列退化成单曲，无法在歌单内切歌。
+      _queueSaveTimer?.cancel();
+      unawaited(_persistQueueState());
     }
     if (_isAppForeground == isForeground) return;
     _isAppForeground = isForeground;
@@ -2114,6 +2219,8 @@ class PlayerController extends ChangeNotifier {
     final savedPendingMs = prefs.getInt(_pendingListenTimeKey) ?? 0;
     if (savedPendingMs > 0) {
       _pendingListenTime = Duration(milliseconds: savedPendingMs);
+      // 这部分时长在上次运行中已经计入本地统计，水位对齐避免重复累加。
+      _lastStatsFlush = _pendingListenTime;
     }
     bluetoothLyricsTitleSyncEnabled =
         prefs.getBool(_bluetoothLyricsTitleSyncSettingKey) ?? false;
@@ -2241,12 +2348,19 @@ class PlayerController extends ChangeNotifier {
       _listenTimeStartedAt ??= DateTime.now();
       _listenTimeTimer ??= Timer.periodic(
         _listenTimeCheckInterval,
-        (_) => unawaited(_maybeReportListeningTime()),
+        (_) => unawaited(_onListenTimeTick()),
       );
       return;
     }
 
     _pauseListeningTimeTracker();
+  }
+
+  /// 每 15 秒一次：独立累计本地统计，并按 5 分钟周期向服务端上报。
+  Future<void> _onListenTimeTick() async {
+    // 本地统计与本地上报互不影响：先落盘，再尝试上报。
+    await _flushListenStats();
+    await _maybeReportListeningTime();
   }
 
   void _pauseListeningTimeTracker() {
@@ -2257,14 +2371,34 @@ class PlayerController extends ChangeNotifier {
       SharedPreferences.getInstance().then((prefs) {
         prefs.setInt(_pendingListenTimeKey, _pendingListenTime.inMilliseconds);
       }).catchError((_) {});
+      // 暂停/切歌时立刻把已听时长结进本地统计，避免只听了十几秒就退出
+      // 导致这段时间完全没有被记录。
+      unawaited(_flushListenStats());
     }
     _listenTimeTimer?.cancel();
     _listenTimeTimer = null;
   }
 
+  /// 把尚未计入本地统计的听歌时长增量写入统计。
+  ///
+  /// 与服务端上报完全解耦：接口失败、未登录、离线播放都不影响本地统计。
+  Future<void> _flushListenStats() async {
+    final tracked = _trackedListeningTime();
+    final delta = tracked - _lastStatsFlush;
+    if (delta < const Duration(seconds: 1)) return;
+    _lastStatsFlush = tracked;
+    try {
+      await _statsService.addListenTime(delta);
+    } catch (_) {
+      // 写盘失败时回退基准，下次继续尝试
+      _lastStatsFlush -= delta;
+    }
+  }
+
   void _resetListeningTimeTracker() {
     _listenTimeStartedAt = null;
     _pendingListenTime = Duration.zero;
+    _lastStatsFlush = Duration.zero;
     _listenTimeTimer?.cancel();
     _listenTimeTimer = null;
     SharedPreferences.getInstance().then((prefs) {
@@ -2290,15 +2424,19 @@ class PlayerController extends ChangeNotifier {
 
     _isReportingListenTime = true;
     try {
+      // 先把服务端上报前已累积的本地时长结清，避免上报成功后水位跳变
+      // 让后续增量算成负数而丢失。
+      await _flushListenStats();
       await _api.addListeningTime();
-      // 上报成功，同步记录本地统计的听歌时长
-      unawaited(_statsService.addListenTime(_listenTimeReportInterval));
+      // 本地统计已由 _flushListenStats 独立累计，这里只清算上报水位。
       final stillPlaying = isPlaying && currentSong != null;
       final remainder = _trackedListeningTime() - _listenTimeReportInterval;
       _pendingListenTime = remainder > Duration.zero
           ? remainder
           : Duration.zero;
       _listenTimeStartedAt = stillPlaying ? DateTime.now() : null;
+      // 上报水位与本地统计水位一起归零对齐
+      _lastStatsFlush = _pendingListenTime;
       if (!stillPlaying) {
         _listenTimeTimer?.cancel();
         _listenTimeTimer = null;
@@ -2306,6 +2444,7 @@ class PlayerController extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_pendingListenTimeKey);
     } catch (error) {
+      // 服务端失败不影响本地统计，只记录日志
       debugPrint('[KA Music][listen-time] report failed: $error');
     } finally {
       _isReportingListenTime = false;
@@ -2390,6 +2529,20 @@ class PlayerController extends ChangeNotifier {
 
     if (index >= 0 && index < queue.length - 1) {
       return queue[index + 1];
+    }
+
+    // index == -1 说明当前歌曲不在队列里（重启后快照残缺、外部入口切歌等）。
+    // 此时不能直接返回 queue.first：若它正好就是当前歌曲，「下一首」会永远
+    // 原地重播同一首，表现为完全无法切歌。改为挑一首不同的歌。
+    if (index < 0 && queue.length > 1) {
+      final currentIdentity = currentSong == null
+          ? ''
+          : _songIdentity(currentSong!);
+      final different = queue.firstWhere(
+        (song) => _songIdentity(song) != currentIdentity,
+        orElse: () => queue.first,
+      );
+      return different;
     }
 
     return queue.first;
@@ -2593,23 +2746,38 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// 立即持久化播放队列、当前歌曲和播放模式。
+  ///
+  /// 队列、当前歌曲、播放模式必须作为**同一个 JSON 快照**写入：
+  /// SharedPreferences 的多次写入不是原子的，一旦进程在中间被杀，
+  /// 重启后就会出现「当前歌曲存在但队列丢了」的残缺状态，表现为
+  /// 无法在歌单内切歌（下一首永远是它自己），必须重新进歌单点播。
   Future<void> _persistQueueState() async {
     final prefs = await SharedPreferences.getInstance();
     final song = currentSong;
+    final snapshot = jsonEncode({
+      'mode': playbackMode.name,
+      'currentSong': song?.toCache(),
+      'queue': queue.map((s) => s.toCache()).toList(),
+      if (_queueOrigin != null) 'origin': _queueOrigin!.toJson(),
+    });
+    // 先写快照（单次原子写入），再更新进度。
+    await prefs.setString(_stateKey, snapshot);
     if (song != null) {
-      await prefs.setString(_currentSongKey, jsonEncode(song.toCache()));
-      // 直接读取播放器的实时位置
+      // 进度单独保存：高频更新时无需重写整个队列。
+      // 与歌曲 hash 绑定，避免位置被错配到别的歌上。
       final currentPos = audioPlayer.position;
-      await prefs.setInt(_currentPositionKey, currentPos.inMilliseconds);
+      await prefs.setString(
+        _currentPositionKey,
+        jsonEncode({
+          'hash': song.hash,
+          'ms': currentPos.inMilliseconds,
+        }),
+      );
     } else {
-      await prefs.remove(_currentSongKey);
       await prefs.remove(_currentPositionKey);
     }
-    await prefs.setString(
-      _queueKey,
-      jsonEncode(queue.map((s) => s.toCache()).toList()),
-    );
-    await prefs.setString(_playbackModeKey, playbackMode.name);
+    // 旧版本的分散字段不再写入：歌单动辄上千首，写多份副本会显著拖慢
+    // 主线程外的序列化，也更容易在写入中途被杀导致状态残缺。
   }
 
   /// 启动定时保存播放进度（每 5 秒）。
@@ -2621,13 +2789,26 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// 保存当前播放进度。
+  ///
+  /// 进度必须与歌曲绑定（hash + 毫秒）一起存：只存毫秒的话，切歌与写盘
+  /// 交错时会把这个位置错配到下一首歌上，重进软件就跳到错误位置。
   void _saveCurrentPosition() {
-    if (currentSong == null) return;
+    final song = currentSong;
+    if (song == null) return;
     // 直接读取播放器的实时位置，避免使用可能过时的 position 变量
     final currentPos = audioPlayer.position;
-    SharedPreferences.getInstance().then((prefs) {
-      prefs.setInt(_currentPositionKey, currentPos.inMilliseconds);
+    final payload = jsonEncode({
+      'hash': song.hash,
+      'ms': currentPos.inMilliseconds,
     });
+    SharedPreferences.getInstance().then((prefs) async {
+      await prefs.setString(_currentPositionKey, payload);
+    });
+  }
+
+  /// 读取磁盘上保存的播放进度，返回 null 表示没有可用进度。
+  Duration? _readSavedPosition(SharedPreferences prefs, String? songHash) {
+    return parseSavedPosition(prefs.get(_currentPositionKey), songHash);
   }
 
   /// 停止定时保存播放进度。
@@ -2649,6 +2830,9 @@ class PlayerController extends ChangeNotifier {
     currentSong = songs.first;
     position = Duration.zero;
     positionNotifier.value = Duration.zero;
+    // 服务端「继续播放」不提供精确到毫秒的进度，清掉本地待恢复值，
+    // 避免把上一次本地记录的进度套到这首歌上。
+    _resumePosition = null;
     notifyListeners();
   }
 
@@ -2658,8 +2842,64 @@ class PlayerController extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     if (requestSerial != _playRequestSerial) return false;
 
+    String? modeName;
+    List<Song> restoredQueue = const [];
+    Song? restoredSong;
+    QueueOrigin? restoredOrigin;
+
+    // 优先读快照：队列/当前歌曲/模式是同一次写入，不会出现残缺组合。
+    final snapshotJson = prefs.getString(_stateKey);
+    if (snapshotJson != null && snapshotJson.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(snapshotJson);
+        if (decoded is Map<String, dynamic>) {
+          modeName = asString(decoded['mode']);
+          restoredQueue = asList(decoded['queue'])
+              .whereType<Map<String, dynamic>>()
+              .map(Song.fromCache)
+              .where((s) => s.hash.isNotEmpty)
+              .toList();
+          restoredOrigin = QueueOrigin.fromJson(decoded['origin']);
+          final songJson = decoded['currentSong'];
+          if (songJson is Map<String, dynamic>) {
+            restoredSong = Song.fromCache(songJson);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 兼容旧版本的分散字段（升级后首次启动）。
+    if (modeName == null) {
+      modeName = prefs.getString(_playbackModeKey);
+    }
+    if (restoredQueue.isEmpty) {
+      final queueJson = prefs.getString(_queueKey);
+      if (queueJson != null && queueJson.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(queueJson);
+          if (decoded is List) {
+            restoredQueue = decoded
+                .whereType<Map<String, dynamic>>()
+                .map(Song.fromCache)
+                .where((s) => s.hash.isNotEmpty)
+                .toList();
+          }
+        } catch (_) {}
+      }
+    }
+    if (restoredSong == null) {
+      final songJson = prefs.getString(_currentSongKey);
+      if (songJson != null && songJson.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(songJson);
+          if (decoded is Map<String, dynamic>) {
+            restoredSong = Song.fromCache(decoded);
+          }
+        } catch (_) {}
+      }
+    }
+
     // 恢复播放模式
-    final modeName = prefs.getString(_playbackModeKey);
     if (modeName != null) {
       for (final mode in PlaybackMode.values) {
         if (mode.name == modeName) {
@@ -2669,44 +2909,87 @@ class PlayerController extends ChangeNotifier {
       }
     }
 
-    // 恢复播放队列
-    final queueJson = prefs.getString(_queueKey);
-    if (queueJson != null && queueJson.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(queueJson);
-        if (decoded is List) {
-          final restored = decoded
-              .whereType<Map<String, dynamic>>()
-              .map(Song.fromCache)
-              .where((s) => s.hash.isNotEmpty)
-              .toList();
-          if (restored.isNotEmpty) {
-            queue = restored;
-          }
-        }
-      } catch (_) {}
+    // 恢复当前歌曲：队列里找不到时补进去，否则 currentIndex 为 -1，
+    // 「下一首」会一直返回同一首，看起来就是无法切歌。
+    if (restoredSong != null && restoredSong.hash.isNotEmpty) {
+      final identity = _songIdentity(restoredSong);
+      if (restoredQueue.isNotEmpty &&
+          !restoredQueue.any((item) => _songIdentity(item) == identity)) {
+        restoredQueue = List<Song>.of(restoredQueue)..add(restoredSong);
+      }
+      queue = restoredQueue.isEmpty
+          ? [restoredSong]
+          : List<Song>.of(restoredQueue);
+      currentSong = restoredSong;
+    } else if (restoredQueue.isNotEmpty) {
+      queue = List<Song>.of(restoredQueue);
+      currentSong = restoredQueue.first;
     }
 
-    // 恢复当前歌曲
-    final songJson = prefs.getString(_currentSongKey);
-    if (songJson != null && songJson.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(songJson);
-        if (decoded is Map<String, dynamic>) {
-          currentSong = Song.fromCache(decoded);
-        }
-      } catch (_) {}
-    }
-
-    // 恢复播放进度
-    final posMs = prefs.getInt(_currentPositionKey);
-    if (posMs != null && posMs > 0) {
-      position = Duration(milliseconds: posMs);
+    // 恢复播放进度：只接受与当前歌曲 hash 匹配的记录。
+    // 旧版本只存毫秒值（int），升级后仍兼容读取。
+    final savedPosition = _readSavedPosition(prefs, currentSong?.hash);
+    if (savedPosition != null && savedPosition > Duration.zero) {
+      position = savedPosition;
       positionNotifier.value = position;
+      _resumePosition = savedPosition;
+    } else {
+      position = Duration.zero;
+      positionNotifier.value = Duration.zero;
+      _resumePosition = null;
     }
 
+    _queueOrigin = restoredOrigin;
     notifyListeners();
+
+    // 队列残缺（只剩一首或为空）时按来源补全，保证能继续切歌。
+    // 放在 notifyListeners 之后：界面先用已恢复内容渲染，补全后台完成。
+    if (restoredOrigin != null && queue.length <= 1) {
+      unawaited(_rebuildQueueFromOrigin());
+    }
     return true;
+  }
+
+  /// 按记忆的队列来源重新拉取完整歌单/专辑，并用它替换当前队列。
+  ///
+  /// 只在队列明显残缺时触发；当前歌曲不在新队列里就补到队尾，
+  /// 避免 currentIndex 变成 -1 导致「下一首」原地不动。
+  Future<void> _rebuildQueueFromOrigin() async {
+    final origin = _queueOrigin;
+    final song = currentSong;
+    if (origin == null || song == null) return;
+    final requestSerial = _playRequestSerial;
+    try {
+      final songs = origin.isAlbum
+          ? await _api.albumSongs(origin.id, pageSize: 5000)
+          : await _api.playlistSongs(origin.id, fetchAll: true);
+      if (requestSerial != _playRequestSerial ||
+          _queueOrigin != origin ||
+          songs.isEmpty) {
+        return;
+      }
+      final identity = _songIdentity(song);
+      final rebuilt = List<Song>.of(songs);
+      if (!rebuilt.any((item) => _songIdentity(item) == identity)) {
+        rebuilt.add(song);
+      }
+      queue = rebuilt;
+      if (playbackMode == PlaybackMode.shuffle) {
+        _shuffleCycle.reset(
+          queue.map(_songIdentity).where((identity) => identity.isNotEmpty),
+          current: identity,
+        );
+      }
+      await _audioHandler.setSongQueue(
+        queueSongs: queue,
+        queueIndex: currentIndex,
+        currentSong: song,
+      );
+      _saveQueueState();
+      notifyListeners();
+    } catch (_) {
+      // 重建失败保持已恢复的队列，用户重新点歌单也能恢复
+    }
   }
 
   /// 在恢复队列后加载并准备播放当前歌曲（默认不自动播放，仅预加载）。
@@ -2729,8 +3012,9 @@ class PlayerController extends ChangeNotifier {
     climax = null;
     unawaited(_loadClimax(song));
 
-    // 在加载前保存恢复的进度（loadSong 会重置 position 为 0）
-    final restoredPosition = position;
+    // 在加载前保存恢复的进度（loadSong 会重置 position 为 0）。
+    // 优先用磁盘上待应用的进度，其次才是内存中的 position。
+    final restoredPosition = _resumePosition ?? position;
 
     isPreparing = true;
     notifyListeners();
@@ -2767,7 +3051,10 @@ class PlayerController extends ChangeNotifier {
         if (restoredPosition > Duration.zero) {
           await _audioHandler.seek(_clampPosition(restoredPosition));
           if (requestSerial != _playRequestSerial) return;
+          _setPositionBase(_clampPosition(restoredPosition), playing: false);
         }
+        // 进度已应用到音频引擎，清掉待恢复标记，避免后续再次跳转
+        _resumePosition = null;
 
         unawaited(loadLyrics(song));
         _startPositionSaving();

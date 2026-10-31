@@ -39,6 +39,26 @@ jobs:
       - name: Disable Flutter analytics
         run: flutter config --no-analytics
 
+      # Pub 缓存：key 绑定 pubspec.lock，依赖不变就一直命中
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      # CocoaPods 缓存：iOS 依赖解析与下载是 macOS 构建的主要耗时之一
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods
+          key: pods-${{ runner.os }}-${{ hashFiles('pubspec.lock', 'ios/**/Podfile*') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
       - name: Install dependencies
         run: flutter pub get
 

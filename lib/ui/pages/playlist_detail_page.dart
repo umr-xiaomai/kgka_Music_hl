@@ -163,6 +163,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   bool get _isStaticCollection => widget.initialSongs != null;
 
+  /// 当前页面歌曲列表对应的队列来源，供重启后重建队列使用。
+  QueueOrigin? get _currentQueueOrigin {
+    // 静态歌单（如搜索结果、最近播放）没有稳定的远端来源，不记录
+    if (_isStaticCollection) return null;
+    final title = _info?.title ?? widget.playlist.title;
+    if (_isAlbum) {
+      final albumId = widget.playlist.albumId ?? widget.playlist.id;
+      return QueueOrigin.album(id: albumId, title: title);
+    }
+    return QueueOrigin.playlist(id: widget.playlist.id, title: title);
+  }
+
   bool get _isAlbum => !_isStaticCollection && widget.playlist.isCollectedAlbum;
 
   @override
@@ -439,7 +451,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   Future<void> _playFromVisibleQueue(Song song, List<Song> startedQueue) async {
-    await widget.player.playSong(song, queue: startedQueue);
+    await widget.player.playSong(
+      song,
+      queue: startedQueue,
+      origin: _currentQueueOrigin,
+    );
     if (!mounted) return;
     _showPlaybackErrorIfNeeded();
 

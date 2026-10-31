@@ -866,9 +866,13 @@ class Song {
                 })
             .toList(),
         if (isCloudDrive) 'isCloudDrive': true,
+        // 音源必须持久化：否则重启后网易云/本地歌曲会被当成酷狗歌曲，
+        // 恢复队列后点「下一首」拿不到播放地址，表现为无法切歌。
+        'source': source.name,
       };
 
   factory Song.fromCache(Map<String, dynamic> json) {
+    final cachedSource = asString(json['source']);
     return Song(
       id: asString(json['id']) ?? '',
       title: asString(json['title']) ?? '未知歌曲',
@@ -890,6 +894,10 @@ class Song {
           .where((artist) => artist.name.isNotEmpty)
           .toList(),
       isCloudDrive: json['isCloudDrive'] == true,
+      source: SongSource.values.firstWhere(
+        (value) => value.name == cachedSource,
+        orElse: () => SongSource.kugou,
+      ),
     );
   }
 }
