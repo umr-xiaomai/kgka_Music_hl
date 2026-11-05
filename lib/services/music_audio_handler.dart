@@ -23,7 +23,15 @@ class MusicAudioHandler extends BaseAudioHandler
   Future<void> Function()? _onPrevious;
   int _queueIndex = 0;
   Song? _currentSong;
+  Song? _sourceSong;
   bool _bluetoothLyricsTitleSync = false;
+
+  /// 当前已经加载到音频引擎上的歌曲。
+  ///
+  /// 与 [PlayerController.currentSong] 不同：切歌时控制器会先更新自身状态，
+  /// 网络解析完成后才真正换音源。保存进度时必须用它判断播放器里的位置
+  /// 属于哪首歌，否则网络慢时会把上一首的位置写到新歌 hash 上。
+  Song? get loadedSong => _sourceSong;
 
   void setBluetoothLyricsTitleSync(bool enabled) {
     _bluetoothLyricsTitleSync = enabled;
@@ -62,6 +70,9 @@ class MusicAudioHandler extends BaseAudioHandler
     } else {
       await audioPlayer.setAudioSource(AudioSource.file(url));
     }
+    // 音源真正切换成功后才更新「已加载歌曲」：在此之前 audioPlayer.position
+    // 仍属于上一首，用它写进度会把旧位置错配到新歌上。
+    _sourceSong = song;
   }
 
   @override

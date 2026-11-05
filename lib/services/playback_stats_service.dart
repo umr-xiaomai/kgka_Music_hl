@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -58,13 +59,17 @@ class PlaybackStats {
     'firstPlayDate': firstPlayDate?.millisecondsSinceEpoch,
   };
 
-  /// 格式化听歌时长为 "x小时y分钟" 或 "y分钟"。
+  /// 格式化听歌时长为 "x小时y分钟"、"y分钟" 或 "z秒"。
+  ///
+  /// 不足 1 分钟时显示秒数：只显示「不足1分钟」会让用户以为统计没有增长。
   String get formattedListenTime {
     final h = totalListenTime.inHours;
     final m = totalListenTime.inMinutes.remainder(60);
     if (h > 0) return '$h小时$m分钟';
     if (m > 0) return '$m分钟';
-    return '不足1分钟';
+    final seconds = totalListenTime.inSeconds;
+    if (seconds > 0) return '$seconds秒';
+    return '0秒';
   }
 
   /// 最常听歌手 Top 10。
@@ -85,8 +90,14 @@ class PlaybackStats {
 /// 播放统计服务。
 ///
 /// 提供本地播放统计的记录与查询：每次播放记 +1，每上报一次听歌时长同步累加。
+///
+/// 读取—修改—写回必须是串行的：切歌的 [recordPlay]、15 秒一次的时长落盘、
+/// 暂停结算可能同时触发，并发执行会互相覆盖、把更新丢掉。
 class PlaybackStatsService {
   static const _key = 'playback_stats';
+
+  /// 串行化所有写操作。
+  static Future<void> _writeChain = Future<void>.value();
 
   /// 读取当前统计；无数据时返回空的 [PlaybackStats]。
   Future<PlaybackStats> getStats() async {
@@ -103,44 +114,65 @@ class PlaybackStatsService {
   }
 
   /// 记录一次播放：累加播放次数，统计歌手/歌曲计数。
-  Future<void> recordPlay(Song song) async {
-    final stats = await getStats();
-    final artistCount = Map<String, int>.of(stats.artistPlayCount);
-    final songCount = Map<String, int>.of(stats.songPlayCount);
-
+  Future<void> recordPlay(Song song) {
     final artistKey = song.artist.trim().isEmpty ? '未知艺人' : song.artist;
     final songKey = song.title.trim().isEmpty ? '未知歌曲' : song.title;
-    artistCount[artistKey] = (artistCount[artistKey] ?? 0) + 1;
-    songCount[songKey] = (songCount[songKey] ?? 0) + 1;
+    return _serialize(() async {
+      final stats = await getStats();
+      final artistCount = Map<String, int>.of(stats.artistPlayCount);
+      final songCount = Map<String, int>.of(stats.songPlayCount);
+      artistCount[artistKey] = (artistCount[artistKey] ?? 0) + 1;
+      songCount[songKey] = (songCount[songKey] ?? 0) + 1;
 
-    final updated = PlaybackStats(
-      totalPlays: stats.totalPlays + 1,
-      totalListenTime: stats.totalListenTime,
-      artistPlayCount: artistCount,
-      songPlayCount: songCount,
-      firstPlayDate: stats.firstPlayDate ?? DateTime.now(),
-    );
-    await _save(updated);
+      await _save(
+        PlaybackStats(
+          totalPlays: stats.totalPlays + 1,
+          totalListenTime: stats.totalListenTime,
+          artistPlayCount: artistCount,
+          songPlayCount: songCount,
+          firstPlayDate: stats.firstPlayDate ?? DateTime.now(),
+        ),
+      );
+    });
   }
 
   /// 累加听歌时长。
-  Future<void> addListenTime(Duration duration) async {
-    if (duration <= Duration.zero) return;
-    final stats = await getStats();
-    final updated = PlaybackStats(
-      totalPlays: stats.totalPlays,
-      totalListenTime: stats.totalListenTime + duration,
-      artistPlayCount: stats.artistPlayCount,
-      songPlayCount: stats.songPlayCount,
-      firstPlayDate: stats.firstPlayDate,
-    );
-    await _save(updated);
+  Future<void> addListenTime(Duration duration) {
+    if (duration <= Duration.zero) return Future<void>.value();
+    return _serialize(() async {
+      final stats = await getStats();
+      await _save(
+        PlaybackStats(
+          totalPlays: stats.totalPlays,
+          totalListenTime: stats.totalListenTime + duration,
+          artistPlayCount: stats.artistPlayCount,
+          songPlayCount: stats.songPlayCount,
+          firstPlayDate: stats.firstPlayDate,
+        ),
+      );
+    });
   }
 
   /// 清空统计。
-  Future<void> clear() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_key);
+  Future<void> clear() {
+    return _serialize(() async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_key);
+    });
+  }
+
+  /// 把操作排到写队列末尾，保证读取—修改—写回不交错。
+  static Future<void> _serialize(Future<void> Function() operation) {
+    final completer = Completer<void>();
+    _writeChain = _writeChain.then((_) async {
+      try {
+        await operation();
+        completer.complete();
+      } catch (error, stack) {
+        completer.completeError(error, stack);
+      }
+    });
+    return completer.future;
   }
 
   Future<void> _save(PlaybackStats stats) async {

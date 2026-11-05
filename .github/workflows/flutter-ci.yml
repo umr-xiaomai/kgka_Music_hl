@@ -60,18 +60,34 @@ jobs:
             pub-${{ runner.os }}-
 
       # Gradle 缓存：Android 构建最耗时的部分（AGP / Kotlin / 三方 AAR）
+      # 同时缓存 Gradle 的 build-cache 目录，配合 org.gradle.caching=true
+      # 让 R8/D8/资源处理等任务在 CI 之间复用结果。
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
+            ~/.gradle/build-cache
+            ~/.gradle/caches/build-cache-1
           key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties', 'pubspec.lock') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
       - name: Pub get
         run: flutter pub get
+
+      # Flutter/Dart 增量编译缓存：flutter_build 目录保存 kernel 与 AOT 中间产物，
+      # 二次构建可显著缩短编译时间；key 绑定源码哈希，源码变化自动失效。
+      # 只缓存中间产物，不缓存 build/，避免复用过期产物污染最终 APK。
+      - name: Cache Flutter build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .dart_tool/flutter_build
+          key: flutter-build-${{ runner.os }}-${{ hashFiles('lib/**/*.dart', 'pubspec.lock', 'android/**/*.gradle*', 'android/app/proguard-rules.pro') }}
+          restore-keys: |
+            flutter-build-${{ runner.os }}-
 
       - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
