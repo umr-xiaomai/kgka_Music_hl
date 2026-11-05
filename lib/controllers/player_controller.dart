@@ -43,11 +43,17 @@ class QueueOrigin {
   const QueueOrigin.album({required String id, String? title})
     : this(kind: 'album', id: id, title: title);
 
+  /// 排行榜来源：重启后可重新拉取整榜，保证「下一首」仍在榜内。
+  const QueueOrigin.rank({required String id, String? title})
+    : this(kind: 'rank', id: id, title: title);
+
   final String kind;
   final String id;
   final String? title;
 
   bool get isAlbum => kind == 'album';
+
+  bool get isRank => kind == 'rank';
 
   Map<String, dynamic> toJson() => {
     'kind': kind,
@@ -2982,9 +2988,7 @@ class PlayerController extends ChangeNotifier {
     if (origin == null || song == null) return;
     final rebuildSerial = ++_queueRebuildSerial;
     try {
-      final songs = origin.isAlbum
-          ? await _api.albumSongs(origin.id, pageSize: 5000)
-          : await _api.playlistSongs(origin.id, fetchAll: true);
+      final songs = await _fetchOriginSongs(origin);
       // 重建只跟「队列来源/当前歌曲」有关，与播放请求序号无关：
       // 恢复预加载会自增 _playRequestSerial，不能因此丢弃补全结果。
       if (rebuildSerial != _queueRebuildSerial ||
@@ -3015,6 +3019,17 @@ class PlayerController extends ChangeNotifier {
     } catch (_) {
       // 重建失败保持已恢复的队列，用户重新点歌单也能恢复
     }
+  }
+
+  /// 按队列来源拉取完整歌曲列表（歌单 / 专辑 / 排行榜）。
+  Future<List<Song>> _fetchOriginSongs(QueueOrigin origin) async {
+    if (origin.isRank) {
+      final page = await _api.rankSongs(origin.id, pageSize: 500);
+      return page.songs;
+    }
+    return origin.isAlbum
+        ? _api.albumSongs(origin.id, pageSize: 5000)
+        : _api.playlistSongs(origin.id, fetchAll: true);
   }
 
   /// 在恢复队列后加载并准备播放当前歌曲（默认不自动播放，仅预加载）。

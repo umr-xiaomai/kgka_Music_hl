@@ -24,6 +24,7 @@ import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
 import 'artist_detail_page.dart';
 import 'playlist_detail_page.dart';
+import 'rank_page.dart';
 import 'search_page.dart';
 import '../../controllers/theme_controller.dart';
 import '../../controllers/download_controller.dart';
@@ -818,6 +819,15 @@ class _RecommendHeader extends StatelessWidget {
                     index: sectionIndex,
                     onChanged: onSectionChanged,
                     onSettingsTap: onSettingsTap,
+                    onOpenRank: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => RankPage(
+                          api: api,
+                          auth: auth,
+                          player: player,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -916,12 +926,14 @@ class _TopTabs extends StatelessWidget {
     required this.index,
     required this.onChanged,
     required this.onSettingsTap,
+    required this.onOpenRank,
   });
 
   final AuthController auth;
   final int index;
   final ValueChanged<int> onChanged;
   final VoidCallback onSettingsTap;
+  final VoidCallback onOpenRank;
 
   @override
   Widget build(BuildContext context) {
@@ -966,6 +978,12 @@ class _TopTabs extends StatelessWidget {
                 ),
               ),
             ),
+            LiquidGlassCapsule(
+              padding: const EdgeInsets.all(8),
+              onTap: onOpenRank,
+              child: const Icon(Icons.leaderboard_rounded, size: 20),
+            ),
+            const SizedBox(width: 8),
             LiquidGlassCapsule(
               padding: const EdgeInsets.all(8),
               onTap: onSettingsTap,

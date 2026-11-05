@@ -18,6 +18,7 @@ import '../adaptive_layout.dart';
 import 'home_page.dart';
 import 'library_page.dart';
 import 'player_page.dart';
+import 'rank_page.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
 
@@ -529,6 +530,23 @@ class _AppShellState extends State<AppShell>
                 ],
               ),
             ),
+          ),
+          // Rank Icon
+          IconButton(
+            tooltip: '排行榜',
+            iconSize: 28,
+            icon: const Icon(Icons.leaderboard_rounded),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => RankPage(
+                    api: widget.api,
+                    auth: widget.auth,
+                    player: widget.player,
+                  ),
+                ),
+              );
+            },
           ),
           // Settings Icon
           IconButton(

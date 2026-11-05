@@ -277,6 +277,55 @@ class MusicApi {
         .toList();
   }
 
+  /// 排行榜榜单列表（`/rank/list`）。
+  ///
+  /// 返回酷狗当前的榜单集合，每项带前三首歌曲名用于卡片预览。
+  /// 接口失败时向上抛出，由页面展示重试。
+  Future<List<RankBoard>> rankBoards() async {
+    final raw = await _client.get('/rank/list', {'page': 1});
+    final json = asMap(raw);
+    final items = raw is List
+        ? raw
+        : asList(json['info'] ?? json['data'] ?? _firstListValue(json));
+    return items
+        .whereType<Map<String, dynamic>>()
+        .map(RankBoard.fromJson)
+        .where((board) => board.id.isNotEmpty)
+        .toList();
+  }
+
+  /// 排行榜歌曲（`/rank/audio`）。
+  ///
+  /// [pageSize] 实测可到 500，榜单最多 500 首，一次拉完即可。
+  Future<RankSongPage> rankSongs(
+    String rankId, {
+    int page = 1,
+    int pageSize = 100,
+  }) async {
+    final raw = await _client.get('/rank/audio', {
+      'rankid': rankId,
+      'page': page,
+      'pagesize': pageSize,
+    });
+    final json = asMap(raw);
+    final items = raw is List
+        ? raw
+        : asList(
+            json['songlist'] ?? json['songs'] ?? json['data'] ??
+                _firstListValue(json),
+          );
+    final songs = items
+        .whereType<Map<String, dynamic>>()
+        .map(Song.fromRankAudio)
+        .where((song) => song.hash.isNotEmpty)
+        .toList();
+    return RankSongPage(
+      songs: songs,
+      total: asInt(json['total']) ?? songs.length,
+      rawItemCount: items.length,
+    );
+  }
+
   /// 新碟上架。
   Future<List<TopAlbumItem>> topAlbums({int page = 1, int pageSize = 30}) async {
     final raw = await _client.get('/top/album', {'page': page, 'pagesize': pageSize});

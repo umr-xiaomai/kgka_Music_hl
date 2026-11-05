@@ -611,6 +611,48 @@ class Song {
     );
   }
 
+  /// 排行榜歌曲（`/rank/audio` 的 `songlist` 项）。
+  ///
+  /// 结构与其它接口不同：音源信息在 `audio_info`（`hash_128` / `duration_128`），
+  /// 降级信息在 `deprecated`，专辑封面在 `album_info.sizable_cover`。
+  factory Song.fromRankAudio(Map<String, dynamic> json) {
+    final audioInfo = asMap(json['audio_info']);
+    final deprecated = asMap(json['deprecated']);
+    final albumInfo = asMap(json['album_info']);
+    final transParam = asMap(json['trans_param']);
+    final authorName = asString(json['author_name']);
+    final artists = parseArtists(json, fallbackName: authorName);
+    final artistName = artists.map((artist) => artist.name).join(' / ');
+    final resolvedArtist = artistName.isNotEmpty
+        ? artistName
+        : (authorName ?? '未知艺人');
+    final rawTitle = asString(json['songname']) ?? '未知歌曲';
+    final hash =
+        asString(audioInfo['hash_128']) ?? asString(deprecated['hash']) ?? '';
+
+    return Song(
+      id:
+          asString(json['audio_id']) ??
+          asString(json['album_audio_id']) ??
+          hash,
+      title: stripArtistNamePrefix(rawTitle, resolvedArtist),
+      artist: resolvedArtist,
+      hash: hash,
+      albumId: asString(json['album_id']),
+      albumAudioId: asString(json['album_audio_id']),
+      albumName: asString(albumInfo['album_name']),
+      coverUrl: normalizeImageUrl(
+        asString(albumInfo['sizable_cover']) ??
+            asString(transParam['union_cover']),
+      ),
+      duration:
+          durationFromMilliseconds(audioInfo['duration_128']) ??
+          durationFromMilliseconds(deprecated['duration']),
+      releaseDate: releaseDateFromSongJson(json),
+      artists: artists,
+    );
+  }
+
   /// 推荐歌曲（/top/card）中的歌曲。
   factory Song.fromTopCard(Map<String, dynamic> json) {
     final songId = asString(json['songid']);
@@ -1182,6 +1224,21 @@ class SongPage {
   const SongPage({required this.songs, required this.rawItemCount});
 
   final List<Song> songs;
+  final int rawItemCount;
+}
+
+/// 排行榜歌曲分页结果。
+class RankSongPage {
+  const RankSongPage({
+    required this.songs,
+    required this.total,
+    required this.rawItemCount,
+  });
+
+  final List<Song> songs;
+
+  /// 榜单歌曲总数（服务端给的 `total`）。
+  final int total;
   final int rawItemCount;
 }
 
@@ -2649,6 +2706,47 @@ class SongClimax {
       startTime: Duration(milliseconds: asInt(json['start_time']) ?? 0),
       endTime: Duration(milliseconds: asInt(json['end_time']) ?? 0),
       hash: asString(json['hash']) ?? '',
+    );
+  }
+}
+
+/// 排行榜（`/rank/list`）中的一个榜单。
+class RankBoard {
+  const RankBoard({
+    required this.id,
+    required this.name,
+    this.coverUrl,
+    this.classify = 0,
+    this.previewSongs = const [],
+  });
+
+  /// 酷狗榜单 id，如 `8888`（TOP500）。
+  final String id;
+  final String name;
+  final String? coverUrl;
+
+  /// 榜单分组：1 热门、2 地区、3 特色、4 全球、5 曲风。
+  final int classify;
+
+  /// 榜单前三首，用于卡片预览。
+  final List<String> previewSongs;
+
+  factory RankBoard.fromJson(Map<String, dynamic> json) {
+    final rawId = asString(json['rankid']) ?? '';
+    return RankBoard(
+      id: rawId,
+      name: asString(json['rankname']) ?? '未知榜单',
+      coverUrl: normalizeImageUrl(
+        asString(json['img_9']) ??
+            asString(json['img_1']) ??
+            asString(json['imgurl']),
+      ),
+      classify: asInt(json['classify']) ?? 0,
+      previewSongs: asList(json['songinfo'])
+          .whereType<Map<String, dynamic>>()
+          .map((item) => asString(item['name']))
+          .whereType<String>()
+          .toList(growable: false),
     );
   }
 }
