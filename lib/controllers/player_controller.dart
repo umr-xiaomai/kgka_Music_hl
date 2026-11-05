@@ -309,6 +309,14 @@ class PlayerController extends ChangeNotifier {
   bool _isScrubbing = false;
   bool _isHandlingCompletion = false;
   int _playRequestSerial = 0;
+  /// 队列重建代次。
+  ///
+  /// 队列重建是「后台补全」，与播放请求（[prepareRestoredSong]、用户点歌）
+  /// 是两条独立的链路，不能共用 [_playRequestSerial]：恢复预加载会自增
+  /// 播放序号，若共用同一个序号，网络稍慢的重建就会被误判为过期而直接
+  /// 放弃，导致 `QueueOrigin` 补全永远不生效。这里单独计数，只用于让
+  /// 新的重建/用户换队列使旧重建失效。
+  int _queueRebuildSerial = 0;
   Future<void> _sourceChangeTail = Future<void>.value();
   bool _isPersonalFmActive = false;
   bool _isLoadingPersonalFm = false;
@@ -2762,14 +2770,16 @@ class PlayerController extends ChangeNotifier {
     });
     // 先写快照（单次原子写入），再更新进度。
     await prefs.setString(_stateKey, snapshot);
-    if (song != null) {
-      // 进度单独保存：高频更新时无需重写整个队列。
-      // 与歌曲 hash 绑定，避免位置被错配到别的歌上。
+    // 进度单独保存：高频更新时无需重写整个队列。
+    // 与「播放器实际加载的歌曲」hash 绑定：切歌后音源还没切换时，
+    // 位置仍属于上一首，按 currentSong 写会错配到新歌上。
+    final positionSong = song == null ? null : _positionRecordSong();
+    if (positionSong != null) {
       final currentPos = audioPlayer.position;
       await prefs.setString(
         _currentPositionKey,
         jsonEncode({
-          'hash': song.hash,
+          'hash': positionSong.hash,
           'ms': currentPos.inMilliseconds,
         }),
       );
@@ -2793,7 +2803,7 @@ class PlayerController extends ChangeNotifier {
   /// 进度必须与歌曲绑定（hash + 毫秒）一起存：只存毫秒的话，切歌与写盘
   /// 交错时会把这个位置错配到下一首歌上，重进软件就跳到错误位置。
   void _saveCurrentPosition() {
-    final song = currentSong;
+    final song = _positionRecordSong();
     if (song == null) return;
     // 直接读取播放器的实时位置，避免使用可能过时的 position 变量
     final currentPos = audioPlayer.position;
@@ -2804,6 +2814,18 @@ class PlayerController extends ChangeNotifier {
     SharedPreferences.getInstance().then((prefs) async {
       await prefs.setString(_currentPositionKey, payload);
     });
+  }
+
+  /// 这段播放位置应该归属到哪首歌上。
+  ///
+  /// 切歌时 [currentSong] 会先更新，音源则要等网络解析完成才真正切换。
+  /// 这段时间 `audioPlayer.position` 仍属于上一首，若按 currentSong 写入，
+  /// 就会出现「新歌 hash + 旧歌位置」的错配（退到后台的立即落盘会放大
+  /// 这个问题）。所以以播放器实际加载的音源为准，尚未加载时退回 currentSong。
+  Song? _positionRecordSong() {
+    final loaded = _audioHandler.loadedSong;
+    if (loaded == null || loaded.hash.isEmpty) return currentSong;
+    return loaded;
   }
 
   /// 读取磁盘上保存的播放进度，返回 null 表示没有可用进度。
@@ -2958,13 +2980,16 @@ class PlayerController extends ChangeNotifier {
     final origin = _queueOrigin;
     final song = currentSong;
     if (origin == null || song == null) return;
-    final requestSerial = _playRequestSerial;
+    final rebuildSerial = ++_queueRebuildSerial;
     try {
       final songs = origin.isAlbum
           ? await _api.albumSongs(origin.id, pageSize: 5000)
           : await _api.playlistSongs(origin.id, fetchAll: true);
-      if (requestSerial != _playRequestSerial ||
+      // 重建只跟「队列来源/当前歌曲」有关，与播放请求序号无关：
+      // 恢复预加载会自增 _playRequestSerial，不能因此丢弃补全结果。
+      if (rebuildSerial != _queueRebuildSerial ||
           _queueOrigin != origin ||
+          currentSong != song ||
           songs.isEmpty) {
         return;
       }

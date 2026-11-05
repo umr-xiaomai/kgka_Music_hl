@@ -67,6 +67,12 @@ class _SearchPageState extends State<SearchPage> {
   /// 点搜索时，不应该继续展示上一次的旧结果，而是回到联想词列表。
   String _lastSearchedKeyword = '';
 
+  /// 正式搜索的请求代次。
+  ///
+  /// 快速搜 A、B 时 A 可能后返回并覆盖 B 的结果，还会把 A 写进搜索历史。
+  /// 每次发起搜索自增，返回时校验代次 + 关键词 + 类型 + 平台，过期结果直接丢弃。
+  int _searchSerial = 0;
+
   _SearchPlatform _platform = _SearchPlatform.kugou;
   _SearchType _type = _SearchType.song;
 
@@ -125,21 +131,26 @@ class _SearchPageState extends State<SearchPage> {
     _debounce?.cancel();
     final text = _controller.text.trim();
     if (text.isEmpty) {
+      // 清空输入：让进行中的搜索请求全部失效，避免返回后把结果又填回来
+      _searchSerial++;
       setState(() {
         _suggestions = const [];
         _suggestLoading = false;
         _results = const [];
         _albums = const [];
         _searched = false;
+        _loading = false;
         _lastSearchedKeyword = '';
       });
       return;
     }
     // 输入变化后旧结果已经过期：清掉「已搜索」状态，界面回到联想词，
     // 避免用户改了关键词却还盯着上一轮搜索结果。
+    // 这里只在关键词真的变了时处理：光标移动也会触发监听，不能据此清空结果。
     if (_searched && text != _lastSearchedKeyword) {
       setState(() {
         _searched = false;
+        _loading = false;
         _results = const [];
         _albums = const [];
       });
@@ -177,6 +188,9 @@ class _SearchPageState extends State<SearchPage> {
     if (_resultsScrollController.hasClients) {
       _resultsScrollController.jumpTo(0.0);
     }
+    final serial = ++_searchSerial;
+    final type = _type;
+    final platform = _platform;
     setState(() {
       _loading = true;
       _suggestions = const [];
@@ -185,35 +199,57 @@ class _SearchPageState extends State<SearchPage> {
       _lastSearchedKeyword = keywords;
     });
     try {
-      if (_type == _SearchType.album) {
+      if (type == _SearchType.album) {
         final albums = await widget.api.searchAlbums(keywords);
-        if (mounted) {
-          setState(() {
-            _albums = albums;
-            _results = const [];
-          });
-        }
+        if (!_isCurrentSearch(serial, keywords, type, platform)) return;
+        setState(() {
+          _albums = albums;
+          _results = const [];
+        });
       } else {
-        final songs = _platform == _SearchPlatform.netease
+        final songs = platform == _SearchPlatform.netease
             ? await widget.api.searchNetEaseSongs(keywords)
             : await widget.api.searchSongs(keywords);
-        if (mounted) {
-          setState(() {
-            _results = songs;
-            _albums = const [];
-          });
-        }
+        if (!_isCurrentSearch(serial, keywords, type, platform)) return;
+        setState(() {
+          _results = songs;
+          _albums = const [];
+        });
       }
       // 搜索成功后记录历史
       await _historyService.add(keywords);
+      if (!_isCurrentSearch(serial, keywords, type, platform)) return;
       await _loadSearchHistory();
     } catch (error) {
-      if (mounted) {
-        setState(() => _results = const []);
+      if (_isCurrentSearch(serial, keywords, type, platform)) {
+        // 两个列表都要清：专辑搜索失败时残留旧的歌曲结果会误导用户
+        setState(() {
+          _results = const [];
+          _albums = const [];
+        });
       }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && serial == _searchSerial) {
+        setState(() => _loading = false);
+      }
     }
+  }
+
+  /// 请求返回时校验是否仍是最新一次搜索：代次、关键词、类型、平台都要一致。
+  ///
+  /// 还要校验输入框内容：用户改了关键词但没重新搜索时，旧结果不应回填。
+  bool _isCurrentSearch(
+    int serial,
+    String keywords,
+    _SearchType type,
+    _SearchPlatform platform,
+  ) {
+    return mounted &&
+        serial == _searchSerial &&
+        keywords == _lastSearchedKeyword &&
+        _controller.text.trim() == keywords &&
+        type == _type &&
+        platform == _platform;
   }
 
   void _onSubmit() {

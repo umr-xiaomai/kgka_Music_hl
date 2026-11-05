@@ -598,6 +598,7 @@ class MusicApi {
   }) async {
     // `/album/songs` 对 pagesize 有上限（超过约 50 直接返回空数组），
     // 所以大页请求要拆成多次小页聚合，否则专辑详情会一首歌都拿不到。
+    // album_audio_id 的补查在 albumSongPage 内按页完成，这里不再重复。
     if (pageSize <= _albumSongsMaxPageSize) {
       final songPage = await albumSongPage(id, page: page, pageSize: pageSize);
       return songPage.songs;
@@ -620,6 +621,58 @@ class MusicApi {
         ? allSongs.sublist(0, pageSize)
         : allSongs;
   }
+
+  /// 用 `/privilege/lite` 批量补上专辑歌曲的数字 `album_audio_id`。
+  ///
+  /// `/album/songs` 只返回 `audio_info.hash`，而 `/song/url` 需要数字
+  /// `album_audio_id` 才能解析播放地址。不补的话「播放全部」拿不到地址。
+  /// 查询失败时保持原样，播放侧会退回只带 hash 的请求。
+  Future<List<Song>> _backfillAlbumAudioIds(List<Song> songs) async {
+    if (songs.isEmpty) return songs;
+    final pending = <String>{};
+    for (final song in songs) {
+      if (song.hash.isEmpty || song.hasNumericAlbumAudioId) continue;
+      pending.add(song.hash);
+    }
+    if (pending.isEmpty) return songs;
+
+    final hashes = pending.toList(growable: false);
+    final resolved = <String, String>{};
+    for (var start = 0; start < hashes.length; start += _privilegeBatchSize) {
+      final batch = hashes
+          .skip(start)
+          .take(_privilegeBatchSize)
+          .toList(growable: false);
+      try {
+        final raw = await _client.get('/privilege/lite', {
+          'hash': batch.join(','),
+        });
+        final items = raw is List ? raw : asList(asMap(raw)['data']);
+        for (final item in items) {
+          final map = asMap(item);
+          final hash = asString(map['hash']);
+          final audioId = asString(map['album_audio_id']);
+          // 只要数字 ID：hash 形式的值传给 /song/url 同样解析不出地址
+          if (hash == null || hash.isEmpty) continue;
+          if (audioId == null || int.tryParse(audioId) == null) continue;
+          resolved.putIfAbsent(hash, () => audioId);
+        }
+      } catch (_) {
+        // 补查失败不影响列表展示
+      }
+    }
+    if (resolved.isEmpty) return songs;
+
+    return [
+      for (final song in songs)
+        resolved[song.hash] == null
+            ? song
+            : song.copyWith(albumAudioId: resolved[song.hash]!),
+    ];
+  }
+
+  /// `/privilege/lite` 单次批量查询的 hash 数量上限。
+  static const _privilegeBatchSize = 50;
 
   /// `/album/songs` 单页最大条数。
   ///
@@ -650,7 +703,10 @@ class MusicApi {
         .map(Song.fromAlbum)
         .where((song) => song.hash.isNotEmpty)
         .toList();
-    return SongPage(songs: songs, rawItemCount: items.length);
+    return SongPage(
+      songs: await _backfillAlbumAudioIds(songs),
+      rawItemCount: items.length,
+    );
   }
 
   Object? _firstListValue(Map<String, dynamic> json) {
@@ -790,13 +846,17 @@ class MusicApi {
     AudioQuality quality = AudioQuality.standard,
     bool hashOnly = false,
   }) async {
+    // `album_audio_id` 必须是数字 ID；旧缓存里可能残留用 hash 冒充的值，
+    // 直接传给 `/song/url` 会让服务端解析失败、返回空地址，这种情况下
+    // 省略该参数（只带 hash），避免把整首歌的解析都带坏。
     final json = asMap(
       await _client.get('/song/url', {
         'hash': song.hash,
         'quality': quality.apiValue,
         if (!hashOnly) ...{
           'album_id': song.albumId,
-          'album_audio_id': song.albumAudioId,
+          if (song.hasNumericAlbumAudioId)
+            'album_audio_id': song.albumAudioId,
         },
         'free_part': false,
       }),

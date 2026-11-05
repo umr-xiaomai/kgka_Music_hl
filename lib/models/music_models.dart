@@ -491,6 +491,17 @@ class Song {
 
   /// 发行年份（[releaseDate] 的便捷取值）。
   int? get releaseYear => releaseDate?.year;
+
+  /// `album_audio_id` 是否是 `/song/url` 需要的数字 ID。
+  ///
+  /// 专辑列表接口只返回 hash，旧缓存里也可能残留 hash 冒充的 ID，
+  /// 这两种情况都必须当成「没有数字 ID」处理。
+  bool get hasNumericAlbumAudioId {
+    final id = albumAudioId;
+    if (id == null || id.isEmpty) return false;
+    return int.tryParse(id) != null;
+  }
+
   final List<ArtistRef> artists;
 
   /// 标记是否为云盘歌曲。云盘歌曲的播放地址需通过 `/user/cloud/url` 获取。
@@ -859,12 +870,34 @@ class Song {
       artist: resolvedArtist,
       hash: asString(audioInfo['hash']) ?? '',
       albumId: asString(base['album_id']),
-      albumAudioId: asString(audioInfo['hash']) ?? asString(json['id']),
+      // 注意：`/album/songs` 只返回 `audio_info.hash`，没有数字 `album_audio_id`。
+      // 不能用 hash 顶替：`/song/url` 会把它当成 album_audio_id 传下去，
+      // 导致专辑歌曲解析不出播放地址。缺失时留空，由调用方按 hash 回填或省略。
+      albumAudioId: asString(json['album_audio_id']),
       albumName: asString(albumInfo['album_name']),
       coverUrl: normalizeImageUrl(asString(albumInfo['cover'])),
       artists: artists,
       duration: durationFromMilliseconds(audioInfo['duration']),
       releaseDate: releaseDateFromSongJson(json),
+    );
+  }
+
+  /// 只覆盖 [albumAudioId]：`/album/songs` 不给数字 ID，需要补查后替换。
+  Song copyWith({String? albumAudioId}) {
+    return Song(
+      id: id,
+      title: title,
+      artist: artist,
+      hash: hash,
+      albumId: albumId,
+      albumAudioId: albumAudioId ?? this.albumAudioId,
+      albumName: albumName,
+      coverUrl: coverUrl,
+      duration: duration,
+      releaseDate: releaseDate,
+      artists: artists,
+      isCloudDrive: isCloudDrive,
+      source: source,
     );
   }
 

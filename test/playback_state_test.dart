@@ -53,6 +53,43 @@ void main() {
     });
   });
 
+  group('专辑歌曲的 album_audio_id', () {
+    test('不用 hash 冒充数字 album_audio_id', () {
+      final song = Song.fromAlbum({
+        'base': {'audio_name': '七里香', 'author_name': '周杰伦'},
+        'audio_info': {'hash': '9218D816', 'duration': 299232},
+        'album_info': {'album_name': '七里香'},
+      });
+
+      // /album/songs 不给数字 ID，必须留空，否则 /song/url 解析不到地址
+      expect(song.albumAudioId, isNull);
+      expect(song.hasNumericAlbumAudioId, isFalse);
+    });
+
+    test('接口给了数字 album_audio_id 时正常使用', () {
+      final song = Song.fromAlbum({
+        'base': {'audio_name': '七里香'},
+        'audio_info': {'hash': '9218D816'},
+        'album_audio_id': 32144418,
+      });
+
+      expect(song.albumAudioId, '32144418');
+      expect(song.hasNumericAlbumAudioId, isTrue);
+    });
+
+    test('旧缓存里的 hash 会被判定为非数字 ID', () {
+      final legacy = Song.fromCache({
+        'id': '1',
+        'title': '老缓存',
+        'artist': '老歌手',
+        'hash': 'HASH_A',
+        'albumAudioId': 'HASH_A',
+      });
+
+      expect(legacy.hasNumericAlbumAudioId, isFalse);
+    });
+  });
+
   group('QueueOrigin', () {
     test('序列化后再解析保持歌单来源', () {
       const origin = QueueOrigin.playlist(id: '243816', title: '测试歌单');

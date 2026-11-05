@@ -96,8 +96,24 @@ void main() {
 
   group('albumSongs 分页上限', () {
     /// 模拟 `/album/songs`：pagesize > 50 时返回空数组（服务端真实行为）。
-    ApiClient albumClient(List<String> names, List<int> requestedPages) {
+    /// `/privilege/lite` 返回数字 album_audio_id，用于校验补查逻辑。
+    ApiClient albumClient(
+      List<String> names,
+      List<int> requestedPages, {
+      bool privilegeFails = false,
+    }) {
       return clientWith((request) async {
+        if (request.url.path.endsWith('/privilege/lite')) {
+          if (privilegeFails) {
+            // 用 404 而不是 5xx：5xx 会触发 ApiClient 的自动重试，拖慢用例
+            return http.Response('not found', 404);
+          }
+          final hashes = request.url.queryParameters['hash']!.split(',');
+          return jsonResponse([
+            for (final hash in hashes)
+              {'hash': hash, 'album_audio_id': '32144417'},
+          ]);
+        }
         expect(request.url.path, endsWith('/album/songs'));
         final size = int.parse(request.url.queryParameters['pagesize']!);
         final page = int.parse(request.url.queryParameters['page']!);
@@ -138,6 +154,24 @@ void main() {
 
       expect(songs.map((song) => song.title), ['甲', '乙']);
       expect(requested, [30]);
+    });
+
+    test('用 privilege/lite 补上数字 album_audio_id', () async {
+      final api = MusicApi(albumClient(['甲'], []));
+
+      final songs = await api.albumSongs('1', pageSize: 30);
+
+      expect(songs.single.albumAudioId, '32144417');
+      expect(songs.single.hasNumericAlbumAudioId, isTrue);
+    });
+
+    test('补查失败时保持原样，播放侧可退回 hash-only', () async {
+      final api = MusicApi(albumClient(['甲'], [], privilegeFails: true));
+
+      final songs = await api.albumSongs('1', pageSize: 30);
+
+      expect(songs.single.albumAudioId, isNull);
+      expect(songs.single.hasNumericAlbumAudioId, isFalse);
     });
   });
 }
