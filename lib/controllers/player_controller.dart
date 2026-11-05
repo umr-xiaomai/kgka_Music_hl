@@ -96,6 +96,71 @@ Duration? parseSavedPosition(Object? raw, String? songHash) {
   }
 }
 
+/// 生成要落盘的播放进度记录（JSON 字符串）。
+///
+/// 返回 `null` 表示「保持磁盘上已有记录不变，不要改写」。
+///
+/// 恢复播放后音源还没加载完成时，[loadedSongHash] 为空，此时
+/// [playerPosition] 通常是 0（恢复进度还没 seek 到引擎上）。若照写，退到后台
+/// 的立即落盘就会把磁盘里恢复出来的进度（例如 120 秒）抹成 0。
+/// 因此：音源已加载时按实际加载的歌曲写实时位置；音源未加载但有待应用的
+/// [pendingResume] 时写回该恢复进度；否则不改写磁盘。
+String? resolvePositionRecord({
+  required String? currentSongHash,
+  required String? loadedSongHash,
+  required Duration playerPosition,
+  Duration? pendingResume,
+}) {
+  final hasSource = loadedSongHash != null && loadedSongHash.isNotEmpty;
+  if (hasSource) {
+    return jsonEncode({
+      'hash': loadedSongHash,
+      'ms': playerPosition.inMilliseconds,
+    });
+  }
+  if (currentSongHash == null || currentSongHash.isEmpty) return null;
+  if (pendingResume != null && pendingResume > Duration.zero) {
+    return jsonEncode({
+      'hash': currentSongHash,
+      'ms': pendingResume.inMilliseconds,
+    });
+  }
+  // 没有可用进度可写：保留磁盘原值，避免用 0 覆盖，也不要误删。
+  return null;
+}
+
+/// 合并「按来源重建的队列」与重建期间用户手动插入的歌曲。
+///
+/// 后台按来源拉完整歌单时，用户可能已用「下一首播放」插入了歌曲。直接用
+/// [rebuilt] 覆盖 [currentQueue] 会把这些歌弄丢。这里以 [rebuilt] 为骨架，
+/// 把 [currentQueue] 相对 [originalQueue] 新增、且 [rebuilt] 不含的歌曲，
+/// 按原顺序插回当前歌曲之后。
+List<Song> mergeRebuiltQueue({
+  required List<Song> originalQueue,
+  required List<Song> currentQueue,
+  required List<Song> rebuilt,
+  required Song currentSong,
+}) {
+  String id(Song song) => song.hash.isNotEmpty ? song.hash : song.id;
+  final currentId = id(currentSong);
+  final originalIds = originalQueue.map(id).toSet();
+  final rebuiltIds = rebuilt.map(id).toSet();
+  final insertions = currentQueue
+      .where(
+        (song) =>
+            !originalIds.contains(id(song)) && !rebuiltIds.contains(id(song)),
+      )
+      .toList();
+  if (insertions.isEmpty) return rebuilt;
+
+  final result = List<Song>.of(rebuilt);
+  final currentIndex = result.indexWhere((song) => id(song) == currentId);
+  final base = currentIndex < 0 ? 0 : currentIndex + 1;
+  final insertAt = base > result.length ? result.length : base;
+  result.insertAll(insertAt, insertions);
+  return result;
+}
+
 class AudioEffectPreset {
   const AudioEffectPreset({required this.name, required this.levels});
 
@@ -2777,19 +2842,13 @@ class PlayerController extends ChangeNotifier {
     // 先写快照（单次原子写入），再更新进度。
     await prefs.setString(_stateKey, snapshot);
     // 进度单独保存：高频更新时无需重写整个队列。
-    // 与「播放器实际加载的歌曲」hash 绑定：切歌后音源还没切换时，
-    // 位置仍属于上一首，按 currentSong 写会错配到新歌上。
-    final positionSong = song == null ? null : _positionRecordSong();
-    if (positionSong != null) {
-      final currentPos = audioPlayer.position;
-      await prefs.setString(
-        _currentPositionKey,
-        jsonEncode({
-          'hash': positionSong.hash,
-          'ms': currentPos.inMilliseconds,
-        }),
-      );
-    } else {
+    // 恢复音源尚未加载时不能用播放器的 0 位置覆盖磁盘里待恢复的进度。
+    final record = _buildPositionRecord();
+    if (record != null) {
+      await prefs.setString(_currentPositionKey, record);
+    } else if (song == null && _audioHandler.loadedSong == null) {
+      // 确实没有任何歌曲时才清除记录；有当前歌曲但音源未加载时保持原值，
+      // 否则退到后台会把磁盘上待恢复的进度（如 120 秒）抹成 0。
       await prefs.remove(_currentPositionKey);
     }
     // 旧版本的分散字段不再写入：歌单动辄上千首，写多份副本会显著拖慢
@@ -2809,29 +2868,23 @@ class PlayerController extends ChangeNotifier {
   /// 进度必须与歌曲绑定（hash + 毫秒）一起存：只存毫秒的话，切歌与写盘
   /// 交错时会把这个位置错配到下一首歌上，重进软件就跳到错误位置。
   void _saveCurrentPosition() {
-    final song = _positionRecordSong();
-    if (song == null) return;
-    // 直接读取播放器的实时位置，避免使用可能过时的 position 变量
-    final currentPos = audioPlayer.position;
-    final payload = jsonEncode({
-      'hash': song.hash,
-      'ms': currentPos.inMilliseconds,
-    });
+    final payload = _buildPositionRecord();
+    if (payload == null) return;
     SharedPreferences.getInstance().then((prefs) async {
       await prefs.setString(_currentPositionKey, payload);
     });
   }
 
-  /// 这段播放位置应该归属到哪首歌上。
-  ///
-  /// 切歌时 [currentSong] 会先更新，音源则要等网络解析完成才真正切换。
-  /// 这段时间 `audioPlayer.position` 仍属于上一首，若按 currentSong 写入，
-  /// 就会出现「新歌 hash + 旧歌位置」的错配（退到后台的立即落盘会放大
-  /// 这个问题）。所以以播放器实际加载的音源为准，尚未加载时退回 currentSong。
-  Song? _positionRecordSong() {
+  /// 生成要落盘的进度记录；null 表示保持磁盘原值不改写。
+  String? _buildPositionRecord() {
     final loaded = _audioHandler.loadedSong;
-    if (loaded == null || loaded.hash.isEmpty) return currentSong;
-    return loaded;
+    final loadedHash = loaded?.hash.isNotEmpty == true ? loaded!.hash : null;
+    return resolvePositionRecord(
+      currentSongHash: currentSong?.hash,
+      loadedSongHash: loadedHash,
+      playerPosition: audioPlayer.position,
+      pendingResume: _resumePosition,
+    );
   }
 
   /// 读取磁盘上保存的播放进度，返回 null 表示没有可用进度。
@@ -2987,6 +3040,9 @@ class PlayerController extends ChangeNotifier {
     final song = currentSong;
     if (origin == null || song == null) return;
     final rebuildSerial = ++_queueRebuildSerial;
+    // 记录发起重建时的队列快照：网络返回期间用户可能用「下一首播放」
+    // 插入了新歌，不能直接用来源歌单把它们覆盖掉。
+    final originalQueue = List<Song>.of(queue);
     try {
       final songs = await _fetchOriginSongs(origin);
       // 重建只跟「队列来源/当前歌曲」有关，与播放请求序号无关：
@@ -3002,7 +3058,12 @@ class PlayerController extends ChangeNotifier {
       if (!rebuilt.any((item) => _songIdentity(item) == identity)) {
         rebuilt.add(song);
       }
-      queue = rebuilt;
+      queue = mergeRebuiltQueue(
+        originalQueue: originalQueue,
+        currentQueue: queue,
+        rebuilt: rebuilt,
+        currentSong: song,
+      );
       if (playbackMode == PlaybackMode.shuffle) {
         _shuffleCycle.reset(
           queue.map(_songIdentity).where((identity) => identity.isNotEmpty),

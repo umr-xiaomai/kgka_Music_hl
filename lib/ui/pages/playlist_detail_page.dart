@@ -584,13 +584,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     try {
       if (_isAlbum) {
         final albumId = widget.playlist.albumId ?? widget.playlist.id;
-        final results = await Future.wait([
-          _refreshSongsOnEntry(),
-          _loadAlbumDetail(albumId),
-        ]);
+        // 专辑介绍（/album/detail）可能明显慢于歌曲列表，独立加载：
+        // _loadAlbumDetail 内部自行 setState 更新封面与介绍，不阻塞曲目展示。
+        unawaited(_loadAlbumDetail(albumId));
+        final songs = await _refreshSongsOnEntry();
         if (!mounted) return;
 
-        final songs = results[0] as List<Song>;
         setState(() {
           // 增量替换：仅当网络数据与当前列表不同时才更新，
           // 避免缓存已显示后网络刷新触发 clear+addAll 导致滚动位置重置。
