@@ -31,7 +31,6 @@ import '../widgets/toast.dart';
 import '../widgets/marquee_text.dart';
 import '../widgets/clickable_artist_text.dart';
 import 'comment_page.dart';
-import 'song_detail_page.dart';
 import 'desktop_lyrics_settings_page.dart';
 import 'rhythm_game/rhythm_game_page.dart';
 
@@ -692,6 +691,7 @@ class _LandscapeHeader extends StatelessWidget {
     showSongActionSheet(
       context: context,
       song: song,
+      api: player.api,
       actions: [
         SongSheetAction(
           icon: Icons.speed_rounded,
@@ -760,6 +760,11 @@ class _LandscapeHeader extends StatelessWidget {
               ),
             ),
         ],
+        SongSheetAction(
+          icon: Icons.person_rounded,
+          title: '查看歌手',
+          onTap: () => onArtistTap(song),
+        ),
       ],
     );
   }
@@ -1396,6 +1401,7 @@ class _TopBar extends StatelessWidget {
     showSongActionSheet(
       context: context,
       song: song,
+      api: player.api,
       actions: [
         // Grid actions
         SongSheetAction(
@@ -1477,12 +1483,6 @@ class _TopBar extends StatelessWidget {
           ),
         ),
         // List actions
-        SongSheetAction(
-          icon: Icons.info_outline_rounded,
-          title: '详细信息',
-          subtitle: '专辑、发行年份、时长、音源',
-          onTap: () => openSongDetailPage(context, song, api: player.api),
-        ),
         if (supportsComments(song))
           SongSheetAction(
             icon: Icons.comment_outlined,
@@ -1497,6 +1497,11 @@ class _TopBar extends StatelessWidget {
             onTap: () =>
                 showAddToPlaylistSheet(context: context, auth: auth, song: song),
           ),
+        SongSheetAction(
+          icon: Icons.person_rounded,
+          title: '查看歌手',
+          onTap: () => onArtistTap(song),
+        ),
       ],
     );
   }
@@ -1537,6 +1542,7 @@ class _PosterPlayerPageState extends State<_PosterPlayerPage>
     showSongActionSheet(
       context: context,
       song: widget.song,
+      api: widget.player.api,
       actions: [
         SongSheetAction(
           icon: Icons.speed_rounded,

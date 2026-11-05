@@ -14,6 +14,7 @@ import '../adaptive_layout.dart';
 import '../widgets/liquid_glass_ui.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/status_bar_overlay.dart';
+import 'song_detail_page.dart';
 
 /// 已下载歌曲与播放缓存管理页。
 class DownloadedSongsPage extends StatefulWidget {
@@ -288,6 +289,14 @@ class _DownloadedSongRow extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: const Icon(Icons.info_outline_rounded),
+              title: const Text('歌曲信息'),
+              onTap: () {
+                Navigator.pop(ctx);
+                openSongDetailPage(context, song, api: api);
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded),
               title: const Text('删除下载'),

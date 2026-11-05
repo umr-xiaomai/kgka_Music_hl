@@ -21,7 +21,6 @@ import '../widgets/scroll_to_top_button.dart';
 import '../adaptive_layout.dart';
 import 'artist_detail_page.dart';
 import 'playlist_detail_page.dart';
-import 'song_detail_page.dart';
 import 'dart:math' as math;
 
 class SearchPage extends StatefulWidget {
@@ -1621,6 +1620,7 @@ class _SearchResults extends StatelessWidget {
                               showSongActionSheet(
                                 context: context,
                                 song: song,
+                                api: player.api,
                                 actions: [
                                   SongSheetAction(
                                     icon: Icons.queue_music_rounded,
@@ -1644,16 +1644,6 @@ class _SearchResults extends StatelessWidget {
                                     icon: Icons.person_rounded,
                                     title: '查看歌手',
                                     onTap: () => onViewArtist(song),
-                                  ),
-                                  SongSheetAction(
-                                    icon: Icons.info_outline_rounded,
-                                    title: '详细信息',
-                                    subtitle: '专辑、发行日期、时长、音源',
-                                    onTap: () => openSongDetailPage(
-                                      context,
-                                      song,
-                                      api: player.api,
-                                    ),
                                   ),
                                   if (player.downloadController != null)
                                     SongSheetAction(

@@ -724,6 +724,7 @@ class _RankSongRow extends StatelessWidget {
                       showSongActionSheet(
                         context: context,
                         song: song,
+                        api: player.api,
                         actions: [
                           SongSheetAction(
                             icon: Icons.queue_music_rounded,

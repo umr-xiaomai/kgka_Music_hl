@@ -8,6 +8,8 @@ import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
+import '../../services/music_api.dart';
+import '../pages/song_detail_page.dart';
 import 'artwork.dart';
 import 'song_artwork.dart';
 import 'toast.dart';
@@ -34,7 +36,17 @@ Future<void> showSongActionSheet({
   required BuildContext context,
   required Song song,
   required List<SongSheetAction> actions,
+  MusicApi? api,
 }) {
+  // 所有歌曲菜单统一补上歌曲信息入口，保证各列表页行为一致。
+  final allActions = <SongSheetAction>[
+    ...actions,
+    SongSheetAction(
+      icon: Icons.info_outline_rounded,
+      title: '歌曲信息',
+      onTap: () => openSongDetailPage(context, song, api: api),
+    ),
+  ];
   final isLandscape = MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height;
   // 左侧滑入弹窗是车机专属交互，普通横屏用标准底部弹窗。
   final isCarMode = isLandscape && ThemeController.instance.carModeEnabled;
@@ -63,7 +75,7 @@ Future<void> showSongActionSheet({
                 ),
               ],
             ),
-            child: _buildCarActionDialogContent(context, song, actions),
+            child: _buildCarActionDialogContent(context, song, allActions),
           ),
         );
       },
@@ -79,8 +91,8 @@ Future<void> showSongActionSheet({
     );
   }
 
-  final gridActions = actions.where((a) => a.isGrid).toList();
-  final listActions = actions.where((a) => !a.isGrid).toList();
+  final gridActions = allActions.where((a) => a.isGrid).toList();
+  final listActions = allActions.where((a) => !a.isGrid).toList();
 
   return showModalBottomSheet<void>(
     context: context,
