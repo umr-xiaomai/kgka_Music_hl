@@ -11,6 +11,7 @@ import '../../controllers/local_music_controller.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/liquid_glass_ui.dart';
+import '../widgets/favorite_button.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/artwork.dart';
 import '../widgets/car_left_player_panel.dart';
@@ -424,6 +425,7 @@ class _AppShellState extends State<AppShell>
                 currentIndex: portraitIndex,
                 onTap: _setPortraitIndex,
                 player: widget.player,
+                auth: widget.auth,
                 onOpenPlayer: _openPlayer,
               ),
       ),
@@ -718,12 +720,14 @@ class _LiquidGlassBottomBar extends StatelessWidget {
     required this.currentIndex,
     required this.onTap,
     required this.player,
+    required this.auth,
     required this.onOpenPlayer,
   });
 
   final int currentIndex;
   final ValueChanged<int> onTap;
   final PlayerController player;
+  final AuthController auth;
   final VoidCallback onOpenPlayer;
 
   @override
@@ -816,6 +820,7 @@ class _LiquidGlassBottomBar extends StatelessWidget {
                       ),
                       _CenterPlayerDisc(
                         player: player,
+                        auth: auth,
                         onOpenPlayer: onOpenPlayer,
                       ),
                       _LiquidNavItem(
@@ -850,10 +855,12 @@ class _LiquidGlassBottomBar extends StatelessWidget {
 class _CenterPlayerDisc extends StatefulWidget {
   const _CenterPlayerDisc({
     required this.player,
+    required this.auth,
     required this.onOpenPlayer,
   });
 
   final PlayerController player;
+  final AuthController auth;
   final VoidCallback onOpenPlayer;
 
   @override
@@ -931,6 +938,7 @@ class _CenterPlayerDiscState extends State<_CenterPlayerDisc>
               child: SizedBox.square(
                 dimension: 46,
                 child: Stack(
+                  clipBehavior: Clip.none,
                   alignment: Alignment.center,
                   children: [
                     // 1. 外圈环形播放进度条（仅显示已播放进度弧线）
@@ -1031,6 +1039,16 @@ class _CenterPlayerDiscState extends State<_CenterPlayerDisc>
                               ),
                       ),
                     ),
+                    if (song != null)
+                      Positioned(
+                        right: -6,
+                        top: -6,
+                        child: FavoriteBadge(
+                          song: song,
+                          auth: widget.auth,
+                          size: 22,
+                        ),
+                      ),
                   ],
                 ),
               ),
