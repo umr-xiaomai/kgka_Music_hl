@@ -7,6 +7,7 @@ import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../pages/player_page.dart';
+import 'favorite_button.dart';
 import 'song_artwork.dart';
 
 /// 全局通用的悬浮液态玻璃音乐唱片控制器（Floating Liquid Glass Disc Pod）。
@@ -280,6 +281,15 @@ class _MiniPlayerState extends State<MiniPlayer>
                                       ),
                                     ),
                                   ),
+                                ),
+                              ),
+                              Positioned(
+                                right: 1,
+                                bottom: 1,
+                                child: FavoriteBadge(
+                                  song: song,
+                                  auth: widget.auth,
+                                  size: 22,
                                 ),
                               ),
                             ],

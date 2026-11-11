@@ -17,6 +17,7 @@ import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
 import '../widgets/expandable_intro.dart';
+import '../widgets/favorite_button.dart';
 import '../widgets/song_artwork.dart';
 import '../widgets/import_playlist_sheet.dart';
 import '../widgets/mini_player.dart';
@@ -1398,6 +1399,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                 song: song,
                                 index: index + 1,
                                 player: widget.player,
+                                auth: widget.auth,
                                 canDelete: _canEdit,
                                 selectionMode: _selectionMode,
                                 selected: _selectedHashes.contains(song.hash),
@@ -1983,6 +1985,7 @@ class _SongRow extends StatelessWidget {
     required this.song,
     required this.index,
     required this.player,
+    required this.auth,
     required this.canDelete,
     required this.onTap,
     required this.onAddToPlaylist,
@@ -1996,6 +1999,7 @@ class _SongRow extends StatelessWidget {
   final Song song;
   final int index;
   final PlayerController player;
+  final AuthController auth;
   final bool canDelete;
   final VoidCallback onTap;
   final VoidCallback onAddToPlaylist;
@@ -2154,6 +2158,13 @@ class _SongRow extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+                  if (!selectionMode)
+                    FavoriteIconButton(
+                      song: song,
+                      auth: auth,
+                      size: 38,
+                      iconSize: 19,
+                    ),
                   if (!selectionMode)
                     IconButton(
                       tooltip: '更多',
