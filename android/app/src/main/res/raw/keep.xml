@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 保留系统媒体通知收藏图标：audio_service 在运行时通过 getIdentifier
+     按名字解析（drawable/ic_media_favorite_on/off），静态资源收缩
+     看不到该引用，必须显式 keep，否则图标会被裁剪导致通知按钮空白。 -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_media_favorite_on,@drawable/ic_media_favorite_off" />

@@ -8,6 +8,7 @@ import '../widgets/liquid_glass_ui.dart';
 import '../widgets/artwork.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
+import '../widgets/favorite_button.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/song_artwork.dart';
 import '../widgets/status_bar_overlay.dart';
@@ -319,6 +320,7 @@ class _RankPageState extends State<RankPage> {
                                   song: song,
                                   index: index + 1,
                                   player: widget.player,
+                                  auth: widget.auth,
                                   onTap: () => _play(song),
                                   onAddToPlaylist: () =>
                                       _addSongToPlaylist(song),
@@ -582,6 +584,7 @@ class _RankSongRow extends StatelessWidget {
     required this.song,
     required this.index,
     required this.player,
+    required this.auth,
     required this.onTap,
     required this.onAddToPlaylist,
     required this.onViewArtist,
@@ -590,6 +593,7 @@ class _RankSongRow extends StatelessWidget {
   final Song song;
   final int index;
   final PlayerController player;
+  final AuthController auth;
   final VoidCallback onTap;
   final VoidCallback onAddToPlaylist;
   final VoidCallback onViewArtist;
@@ -717,6 +721,12 @@ class _RankSongRow extends StatelessWidget {
                           : colorScheme.onSurfaceVariant,
                       fontWeight: FontWeight.w600,
                     ),
+                  ),
+                  FavoriteIconButton(
+                    song: song,
+                    auth: auth,
+                    size: 38,
+                    iconSize: 19,
                   ),
                   IconButton(
                     tooltip: '更多',

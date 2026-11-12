@@ -6,6 +6,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/services.dart';
 
 import 'config/app_config.dart';
+import 'models/music_models.dart';
 import 'controllers/auth_controller.dart';
 import 'controllers/download_controller.dart';
 import 'controllers/player_controller.dart';
@@ -101,10 +102,59 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
       ..cacheService = _cacheService
       ..localMusic = _localMusic;
     _theme = widget.themeController;
+    _wireSystemMediaFavorite();
     _auth.restore();
     _downloads.initialize();
     _restorePlaybackState();
     DeepLinkService.initialize(player: _player, api: _api);
+  }
+
+  /// 把收藏能力接入系统媒体通知（锁屏/状态栏下拉的播放器）。
+  ///
+  /// audio_service 0.18 的 MediaControl.custom 会在 Android 13+ 的系统
+  /// 媒体控制中渲染自定义按钮（占用自定义动作槽位）；点击经插件转发到
+  /// [MusicAudioHandler.customAction]，最终执行 [_toggleFavoriteFromControls]。
+  void _wireSystemMediaFavorite() {
+    widget.audioHandler.attachFavoriteControl(
+      isFavorite: () {
+        final song = _player.currentSong;
+        return song != null && _auth.isLiked(song);
+      },
+      onToggle: _toggleFavoriteFromControls,
+    );
+    // 收藏状态、登录态、歌单加载、切歌都会改变按钮图标/可用性。
+    _auth.addListener(_refreshSystemMediaControls);
+    _player.addListener(_refreshSystemMediaControls);
+  }
+
+  /// 收藏状态等外部变化后刷新系统媒体通知。
+  void _refreshSystemMediaControls() {
+    if (!mounted) return;
+    widget.audioHandler.refreshMediaControls();
+  }
+
+  /// 系统媒体通知收藏按钮的点击处理：与界面内 FavoriteAction 同一守卫逻辑，
+  /// 走酷狗「我喜欢」歌单接口，失败回滚由 AuthController 内部处理。
+  Future<void> _toggleFavoriteFromControls() async {
+    final song = _player.currentSong;
+    if (song == null) return;
+    if (song.source != SongSource.kugou) {
+      Toast.info('该音源暂不支持收藏');
+      return;
+    }
+    if (!_auth.isLoggedIn) {
+      Toast.info('请先登录后再收藏');
+      return;
+    }
+    if (_auth.likedPlaylist == null) {
+      Toast.info('收藏列表加载中，请稍后重试');
+      return;
+    }
+    try {
+      await _auth.toggleLike(song);
+    } catch (_) {
+      Toast.error('操作失败，请稍后重试');
+    }
   }
 
   /// 恢复上次的播放队列和进度。
@@ -177,6 +227,9 @@ class _KaMusicAppState extends State<KaMusicApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _auth.removeListener(_refreshSystemMediaControls);
+    _player.removeListener(_refreshSystemMediaControls);
+    widget.audioHandler.detachFavoriteControl();
     _auth.dispose();
     // 退出前保存播放状态
     _player.persistCurrentStateSync();

@@ -5,6 +5,7 @@ import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
 import '../../models/music_models.dart';
 import 'artwork.dart';
+import 'favorite_button.dart';
 import 'marquee_text.dart';
 import 'toast.dart';
 
@@ -471,12 +472,19 @@ class CarLeftPlayerPanel extends StatelessWidget {
                                     overflow: TextOverflow.ellipsis,
                                   ),
                             subtitle: Text(song.artist),
-                            trailing: active
-                                ? Icon(
-                                    player.isPlaying ? Icons.equalizer_rounded : Icons.pause_rounded,
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FavoriteIconButton(song: song, auth: auth),
+                                if (active)
+                                  Icon(
+                                    player.isPlaying
+                                        ? Icons.equalizer_rounded
+                                        : Icons.pause_rounded,
                                     color: colorScheme.primary,
-                                  )
-                                : null,
+                                  ),
+                              ],
+                            ),
                             onTap: () {
                               Navigator.of(sheetContext).pop();
                               player.playSong(song, queue: player.queue);

@@ -9,6 +9,7 @@ import '../../models/music_models.dart';
 import '../../services/music_api.dart';
 import '../widgets/artwork.dart';
 import '../widgets/expandable_intro.dart';
+import '../widgets/favorite_button.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/marquee_text.dart';
@@ -679,6 +680,12 @@ class _ArtistSongRow extends StatelessWidget {
                         : colorScheme.onSurfaceVariant,
                     fontWeight: FontWeight.w600,
                   ),
+                ),
+                FavoriteIconButton(
+                  song: song,
+                  auth: auth,
+                  size: 38,
+                  iconSize: 19,
                 ),
                 IconButton(
                   tooltip: '更多',
