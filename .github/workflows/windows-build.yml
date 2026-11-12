@@ -1,0 +1,166 @@
+name: Build Windows x64 ZIP
+
+# 触发条件（与 ios-build.yml 保持一致）：
+#   1. 推送到 master 或 main 分支时自动构建
+#   2. 推送 v* 标签时构建并自动发布 GitHub Release
+#   3. 也可在 Actions 页面手动触发 (workflow_dispatch)
+#
+# 目标平台说明：Flutter 3.47+ 的 Windows 桌面只保留 x64 与 arm64，
+# 已不再提供 32 位 win32 目标，因此本工作流只产出 x64 包。
+# 产物是「绿色免安装」目录打包的 ZIP，无需安装程序即可运行。
+on:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# 创建 Release 需要 contents 写权限；清理旧的 workflow run 需要 actions 写权限
+permissions:
+  contents: write
+  actions: write
+
+# 同一分支有新提交时取消上一次运行，省 Actions 额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # 拉取 Git LFS 内容：windows/runner/resources/app_icon.ico 与
+          # lib/assets/logo.png 都是 LFS 跟踪。ico 若仍是 pointer 文本，
+          # runner 的 RC 资源编译会直接失败；logo 缺失则启动后图标/关于页空白。
+          lfs: true
+
+      - name: Verify LFS files are real
+        shell: pwsh
+        run: |
+          git lfs install --local | Out-Null
+          git lfs pull
+          # LFS pointer 是一段以 "version https://git-lfs" 开头的纯文本，
+          # 真实二进制不可能以它开头，用它做判据比看文件大小更可靠。
+          foreach ($f in @('windows/runner/resources/app_icon.ico', 'lib/assets/logo.png')) {
+            if (-not (Test-Path $f)) { Write-Host "❌ 缺少文件 $f"; exit 1 }
+            $head = Get-Content -Path $f -TotalCount 1 -Encoding utf8
+            if ($head -like 'version https://git-lfs*') {
+              Write-Host "❌ $f 仍是 LFS pointer，未拉取到真实内容"; exit 1
+            }
+            Write-Host "  ✓ $f ($((Get-Item $f).Length) bytes)"
+          }
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Disable Flutter analytics
+        run: |
+          flutter config --no-analytics
+          flutter config --enable-windows-desktop
+
+      # Pub 缓存：key 绑定 pubspec.lock，依赖不变就一直命中
+      - name: Cache pub packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Pub\Cache
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # 静态检查只报告、不阻断打包（与 flutter-ci.yml 的非致命参数一致）
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        continue-on-error: true
+
+      # ⚠️ 关键修复：新版 MSVC（VS 2022 17.14+ / STL 14.44+）把
+      # <experimental/coroutine> 的弃用从警告升级为 STL1011 硬错误，
+      # 而 just_audio_windows、permission_handler_windows 等插件仍在包含该头文件，
+      # 于是 windows-latest 上构建会直接失败：
+      #   error STL1011: <experimental/coroutine> is deprecated ... use <coroutine>
+      # cl.exe 会自动把 CL 环境变量的内容追加为编译选项，
+      # 因此定义该宏即可在不改动任何插件源码的前提下压制此错误。
+      # 等上游插件改用 <coroutine> 后，这一步可以删除。
+      - name: Set MSVC STL1011 compat flag
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'CL=/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS'
+
+      - name: Build Windows x64 (release)
+        shell: pwsh
+        run: flutter build windows --release
+
+      - name: Package release folder into ZIP
+        id: pack
+        shell: pwsh
+        run: |
+          $src = 'build/windows/x64/runner/Release'
+          if (-not (Test-Path "$src/kgka_music_hl.exe")) {
+            Write-Host "❌ 未找到产物 $src/kgka_music_hl.exe"; exit 1
+          }
+          # 绿色免安装：exe 依赖同目录的 flutter_windows.dll、data/app.so、
+          # data/icudtl.dat 以及各插件 dll，必须整目录打包，只取 exe 会启动即闪退。
+          Get-ChildItem $src | Select-Object Name, Length | Format-Table -AutoSize
+          $ver = (Select-String -Path pubspec.yaml -Pattern '^version:\s*(\S+)' |
+                  Select-Object -First 1).Matches[0].Groups[1].Value
+          $zip = "kgmusic_windows_x64_v$ver.zip"
+          Compress-Archive -Path "$src/*" -DestinationPath $zip -Force
+          Write-Host "✅ ZIP created: $zip ($([math]::Round((Get-Item $zip).Length/1MB,1)) MB)"
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # 方式一：通过工作流产物 (Artifacts) 提供下载（每次分支推送都会生成）
+      - name: Upload ZIP as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kgka-music-windows-x64
+          path: ${{ steps.pack.outputs.zip }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # 方式二：推送 v* 标签时，自动创建 GitHub Release 并附上 ZIP
+      # 命名沿用现有 Release 资产风格（kgmusic_android_vX.Y.Z.apk / kgka_music.ipa）
+      - name: Create GitHub Release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: KA Music ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: ${{ steps.pack.outputs.zip }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 自动清理：只保留本工作流最近 10 个 run（含本次）。
+      # 与 ios-build.yml 不同的是这里按 workflow 维度过滤，
+      # 避免把 flutter-ci.yml / ios-build.yml 的历史 run 一起删掉。
+      # Release 已附带的资产不受影响。
+      - name: Cleanup old workflow runs (keep latest 10)
+        shell: bash
+        run: |
+          RUN_IDS=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/windows-build.yml/runs?per_page=100&page=1" \
+            --jq '.workflow_runs[].id' | sort -rn | head -100)
+          COUNT=0
+          for ID in $RUN_IDS; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -gt 10 ]; then
+              echo "Deleting run $ID (position $COUNT)"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$ID" \
+                --silent || echo "  (skip: $ID 删除失败或已删除)"
+            fi
+          done
+          echo "保留最近 10 个 run，共检查 $COUNT 个"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
