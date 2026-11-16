@@ -12,7 +12,7 @@ import '../models/music_models.dart';
 class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
   MusicAudioHandler({AudioPlayer? player})
-    : audioPlayer = player ?? AudioPlayer() {
+    : audioPlayer = player ?? AudioPlayer(handleInterruptions: false) {
     // 注意：不能使用 .map(...).pipe(playbackState)。pipe 内部是常驻
     // addStream，期间任何外部 playbackState.add()（如 refreshMediaControls）
     // 都会抛 "Bad state: You cannot add items while items are being added
@@ -22,10 +22,14 @@ class MusicAudioHandler extends BaseAudioHandler
     );
   }
 
+  // Interruption and disconnect policy belongs to PlayerController. Letting
+  // just_audio resume independently can bypass a user pause or disconnect.
   final AudioPlayer audioPlayer;
 
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;
+  void Function()? _onPause;
+  void Function()? _onPlay;
   int _queueIndex = 0;
   Song? _currentSong;
   Song? _sourceSong;
@@ -57,14 +61,20 @@ class MusicAudioHandler extends BaseAudioHandler
   void attachTransportControls({
     required Future<void> Function() onNext,
     required Future<void> Function() onPrevious,
+    void Function()? onPause,
+    void Function()? onPlay,
   }) {
     _onNext = onNext;
     _onPrevious = onPrevious;
+    _onPause = onPause;
+    _onPlay = onPlay;
   }
 
   void detachTransportControls() {
     _onNext = null;
     _onPrevious = null;
+    _onPause = null;
+    _onPlay = null;
   }
 
   /// 当前歌曲是否已收藏（null 表示未接入收藏能力）。
@@ -267,7 +277,8 @@ class MusicAudioHandler extends BaseAudioHandler
   int _playSessionId = 0;
 
   @override
-  Future<void> play() async {
+  Future<void> play({bool userInitiated = true}) async {
+    if (userInitiated) _onPlay?.call();
     final sessionId = ++_playSessionId;
     Object? lastError;
 
@@ -346,7 +357,8 @@ class MusicAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> pause() async {
+  Future<void> pause({bool userInitiated = true}) async {
+    if (userInitiated) _onPause?.call();
     _playSessionId++;
     await audioPlayer.pause();
   }
@@ -368,6 +380,7 @@ class MusicAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> stop() async {
+    _onPause?.call();
     _playSessionId++;
     await audioPlayer.stop();
   }
