@@ -103,6 +103,26 @@ class AudioInterruptionSettingsPage extends StatelessWidget {
                           horizontal: 14,
                         ),
                       ),
+                      Divider(
+                        height: 1,
+                        indent: 58,
+                        color: colorScheme.outlineVariant.withValues(alpha: .4),
+                      ),
+                      SwitchListTile(
+                        value: player.autoPauseOnDeviceDisconnect,
+                        onChanged: player.setAutoPauseOnDeviceDisconnect,
+                        secondary: Icon(
+                          Icons.headset_off_rounded,
+                          color: colorScheme.primary,
+                        ),
+                        title: const Text('蓝牙断开停止播放'),
+                        subtitle: const Text(
+                          '耳机/蓝牙断开时立即暂停，避免意外外放',
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                        ),
+                      ),
                     ],
                   ),
                 ),
