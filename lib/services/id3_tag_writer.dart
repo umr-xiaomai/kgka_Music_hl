@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/music_models.dart';
+import 'audio_file_format.dart';
 
 /// 为下载的音频文件（MP3）注入标准 ID3v2.3 标签（歌曲名、歌手、专辑、封面图片及内嵌歌词）。
 class Id3TagWriter {
@@ -15,15 +16,24 @@ class Id3TagWriter {
     required Song song,
     Uint8List? coverBytes,
     String? lyricsText,
+    bool fetchCover = true,
   }) async {
     final file = File(filePath);
+    final tmpFile = File('$filePath.tag.tmp');
     if (!await file.exists()) {
       return false;
     }
 
     try {
+      // Never prepend ID3 to FLAC/AAC bytes, even when named .mp3 by a quality
+      // fallback. The container-specific writer must handle those instead.
+      final format = await inspectAudioFile(filePath);
+      if (format.format != AudioFileFormat.mp3) return false;
       Uint8List? imageBytes = coverBytes;
-      if (imageBytes == null && song.coverUrl != null && song.coverUrl!.isNotEmpty) {
+      if (fetchCover &&
+          imageBytes == null &&
+          song.coverUrl != null &&
+          song.coverUrl!.isNotEmpty) {
         imageBytes = await _downloadCover(song.coverUrl!);
       }
 
@@ -64,40 +74,38 @@ class Id3TagWriter {
 
       // 读取原文件并跳过可能存在的旧 ID3v2 标签
       final sourceBytes = await file.readAsBytes();
-      int audioOffset = 0;
-      if (sourceBytes.length >= 10 &&
-          sourceBytes[0] == 0x49 && // 'I'
-          sourceBytes[1] == 0x44 && // 'D'
-          sourceBytes[2] == 0x33) {  // '3'
-        final tagSize = _decodeSynchsafe(
-          sourceBytes[6],
-          sourceBytes[7],
-          sourceBytes[8],
-          sourceBytes[9],
-        );
-        audioOffset = 10 + tagSize;
-        if (audioOffset > sourceBytes.length) {
-          audioOffset = 0;
-        }
+      final audioOffset = format.offset;
+      // ID3v1 has no Unicode encoding marker; stale GBK/Latin-1 album names in
+      // that trailer can override the new Unicode tags in other music players.
+      var audioEnd = sourceBytes.length;
+      if (audioEnd - audioOffset >= 128 &&
+          ascii.decode(
+                sourceBytes.sublist(audioEnd - 128, audioEnd - 125),
+                allowInvalid: true,
+              ) ==
+              'TAG') {
+        audioEnd -= 128;
       }
 
       // 写入临时文件后重命名
-      final tmpFile = File('$filePath.tag.tmp');
       final sink = tmpFile.openWrite();
-      sink.add(newTagBytes);
-      if (audioOffset > 0) {
-        sink.add(sourceBytes.sublist(audioOffset));
-      } else {
-        sink.add(sourceBytes);
+      try {
+        sink.add(newTagBytes);
+        sink.add(sourceBytes.sublist(audioOffset, audioEnd));
+        await sink.flush();
+      } finally {
+        await sink.close();
       }
-      await sink.flush();
-      await sink.close();
 
       await tmpFile.rename(filePath);
       return true;
     } catch (e) {
       debugPrint('[Id3TagWriter] Failed to write ID3 tag: $e');
       return false;
+    } finally {
+      try {
+        if (await tmpFile.exists()) await tmpFile.delete();
+      } catch (_) {}
     }
   }
 
@@ -105,8 +113,8 @@ class Id3TagWriter {
   static List<int> _buildId3Header(int framesLength) {
     return [
       0x49, 0x44, 0x33, // 'ID3'
-      0x03, 0x00,       // Version 2.3
-      0x00,             // Flags
+      0x03, 0x00, // Version 2.3
+      0x00, // Flags
       (framesLength >> 21) & 0x7F,
       (framesLength >> 14) & 0x7F,
       (framesLength >> 7) & 0x7F,
@@ -124,7 +132,8 @@ class Id3TagWriter {
 
   /// 构建 APIC 封面图片帧。
   static List<int> _buildApicFrame(Uint8List imageBytes) {
-    final isPng = imageBytes.length >= 8 &&
+    final isPng =
+        imageBytes.length >= 8 &&
         imageBytes[0] == 0x89 &&
         imageBytes[1] == 0x50 &&
         imageBytes[2] == 0x4E &&
@@ -133,10 +142,10 @@ class Id3TagWriter {
     final mimeBytes = ascii.encode(mimeType);
 
     final payload = <int>[
-      0x00,                 // 0x00: ISO-8859-1 for MIME and description
-      ...mimeBytes, 0x00,  // MIME + null terminator
-      0x03,                 // Picture type: Cover (front)
-      0x00,                 // Description: empty + null terminator
+      0x00, // 0x00: ISO-8859-1 for MIME and description
+      ...mimeBytes, 0x00, // MIME + null terminator
+      0x03, // Picture type: Cover (front)
+      0x00, // Description: empty + null terminator
       ...imageBytes,
     ];
 
@@ -147,7 +156,7 @@ class Id3TagWriter {
   static List<int> _buildUsltFrame(String lyrics) {
     final utf16Lyrics = _encodeUtf16LeWithBom(lyrics);
     final payload = <int>[
-      0x01,             // UTF-16 with BOM
+      0x01, // UTF-16 with BOM
       0x7A, 0x68, 0x6F, // Language: 'zho'
       0xFF, 0xFE, 0x00, 0x00, // Empty descriptor (BOM + UTF-16 null)
       ...utf16Lyrics,
@@ -179,14 +188,6 @@ class Id3TagWriter {
       bytes.add((unit >> 8) & 0xFF);
     }
     return bytes;
-  }
-
-  /// 解码 28-bit synchsafe 整数。
-  static int _decodeSynchsafe(int b0, int b1, int b2, int b3) {
-    return ((b0 & 0x7F) << 21) |
-        ((b1 & 0x7F) << 14) |
-        ((b2 & 0x7F) << 7) |
-        (b3 & 0x7F);
   }
 
   /// 超时下载网络封面图。

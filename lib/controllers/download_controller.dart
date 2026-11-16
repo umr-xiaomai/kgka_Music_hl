@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/music_models.dart';
 import '../services/download_service.dart';
+import '../services/download_metadata_writer.dart';
 import '../services/music_api.dart';
 
 /// 下载状态枚举。
@@ -103,15 +104,31 @@ class DownloadController extends ChangeNotifier {
   static const _downloadsIndexKey = 'ka_music_downloads_index';
   static const _playCacheIndexKey = 'ka_music_play_cache_index';
   static const _playCacheLimitKey = 'settings.play_cache_limit';
+  static const _saveLyricsFileKey = 'settings.download_save_lyrics_file';
   static const _playbackFileCheckTimeout = Duration(milliseconds: 400);
 
   final Map<String, DownloadEntry> _downloads = {}; // key = hash
   final Map<String, PlayCacheEntry> _playCache = {}; // key = hash_quality
+  final Map<String, Object> _downloadAttempts = {};
+  final Map<String, Future<void>> _transferTails = {};
+  int _metadataRunning = 0;
+  final List<Completer<void>> _metadataWaiters = [];
   Future<void>? _initializationFuture;
   final Completer<void> _downloadIndexReady = Completer<void>();
 
   int _playCacheLimit = 300 * 1024 * 1024; // 默认 300MB
   int get playCacheLimit => _playCacheLimit;
+
+  bool _saveLyricsFile = false;
+  bool get saveLyricsFile => _saveLyricsFile;
+
+  /// Embedding is always attempted; this also keeps a portable UTF-8 LRC copy.
+  Future<void> setSaveLyricsFile(bool enabled) async {
+    _saveLyricsFile = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_saveLyricsFileKey, enabled);
+    notifyListeners();
+  }
 
   Future<void> setPlayCacheLimit(int limitInBytes) async {
     _playCacheLimit = limitInBytes;
@@ -130,6 +147,7 @@ class DownloadController extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       _playCacheLimit = prefs.getInt(_playCacheLimitKey) ?? (300 * 1024 * 1024);
+      _saveLyricsFile = prefs.getBool(_saveLyricsFileKey) ?? false;
       await _loadDownloads();
     } catch (error) {
       debugPrint('[KA Music] Failed to restore download index: $error');
@@ -361,6 +379,8 @@ class DownloadController extends ChangeNotifier {
     final existing = _downloads[key];
     if (existing?.status == DownloadStatus.downloading) return;
     if (existing?.status == DownloadStatus.downloaded) return;
+    final attempt = Object();
+    _downloadAttempts[key] = attempt;
 
     _downloads[key] = DownloadEntry(
       song: song,
@@ -372,11 +392,13 @@ class DownloadController extends ChangeNotifier {
 
     try {
       final playUrl = await _api.songUrl(song, quality: quality);
+      if (_downloadAttempts[key] != attempt) return;
       if (playUrl.url.isEmpty) {
         throw Exception('这首歌暂时没有可播放地址');
       }
-      await _transfer(song, quality, playUrl.url);
+      await _transfer(song, quality, playUrl.url, attempt);
     } catch (error) {
+      if (_downloadAttempts[key] != attempt) return;
       _downloads[key] = DownloadEntry(
         song: song,
         quality: quality,
@@ -414,6 +436,8 @@ class DownloadController extends ChangeNotifier {
           skipped++;
           continue;
         }
+        final attempt = Object();
+        _downloadAttempts[key] = attempt;
 
         _downloads[key] = DownloadEntry(
           song: song,
@@ -425,6 +449,10 @@ class DownloadController extends ChangeNotifier {
 
         try {
           final playUrl = await _api.songUrl(song, quality: quality);
+          if (_downloadAttempts[key] != attempt) {
+            skipped++;
+            continue;
+          }
           if (playUrl.url.isEmpty) {
             _downloads[key] = DownloadEntry(
               song: song,
@@ -437,8 +465,9 @@ class DownloadController extends ChangeNotifier {
             continue;
           }
           enqueued++;
-          unawaited(_transfer(song, quality, playUrl.url));
+          unawaited(_transfer(song, quality, playUrl.url, attempt));
         } catch (error) {
+          if (_downloadAttempts[key] != attempt) continue;
           _downloads[key] = DownloadEntry(
             song: song,
             quality: quality,
@@ -463,7 +492,36 @@ class DownloadController extends ChangeNotifier {
   }
 
   /// 文件传输（播放地址已解析）。成功后写入已下载索引，失败进入失败列表。
-  Future<void> _transfer(Song song, AudioQuality quality, String url) async {
+  Future<void> _transfer(
+    Song song,
+    AudioQuality quality,
+    String url,
+    Object attempt,
+  ) async {
+    final key = _downloadKey(song);
+    // A cancelled finalizer must finish its atomic replacement before a retry
+    // can download/tag the same path. Only the current attempt may publish it.
+    final previous = _transferTails[key];
+    final done = Completer<void>();
+    _transferTails[key] = done.future;
+    try {
+      if (previous != null) await previous;
+      if (_downloadAttempts[key] != attempt) return;
+      await _runTransfer(song, quality, url, attempt);
+    } finally {
+      done.complete();
+      if (identical(_transferTails[key], done.future)) {
+        _transferTails.remove(key);
+      }
+    }
+  }
+
+  Future<void> _runTransfer(
+    Song song,
+    AudioQuality quality,
+    String url,
+    Object attempt,
+  ) async {
     final key = _downloadKey(song);
     try {
       final path = await _service.download(
@@ -473,14 +531,36 @@ class DownloadController extends ChangeNotifier {
         onProgress: (received, total) {
           final progress = total > 0 ? received / total : 0.0;
           final entry = _downloads[key];
-          if (entry?.status == DownloadStatus.downloading) {
+          if (_downloadAttempts[key] == attempt &&
+              entry?.status == DownloadStatus.downloading) {
             _downloads[key] = entry!.copyWith(progress: progress);
             notifyListeners();
           }
         },
       );
+      if (_downloadAttempts[key] != attempt) return;
+      // Batch URL resolution queues rapidly. Limit enrichment + cover/tag work
+      // independently so it cannot fan out to an entire playlist at once.
+      await _acquireMetadataSlot();
+      late ({Song song, String lyrics}) metadata;
+      try {
+        if (_downloadAttempts[key] != attempt) return;
+        metadata = await _prepareDownloadMetadata(song);
+        if (_downloadAttempts[key] != attempt) return;
+        final prefs = await SharedPreferences.getInstance();
+        if (_downloadAttempts[key] != attempt) return;
+        await _service.writeDownloadMetadata(
+          filePath: path,
+          song: metadata.song,
+          lyricsText: metadata.lyrics,
+          saveLyricsFile: prefs.getBool(_saveLyricsFileKey) ?? false,
+        );
+      } finally {
+        _releaseMetadataSlot();
+      }
+      if (_downloadAttempts[key] != attempt) return;
       _downloads[key] = DownloadEntry(
-        song: song,
+        song: metadata.song,
         quality: quality,
         status: DownloadStatus.downloaded,
         progress: 1,
@@ -490,6 +570,7 @@ class DownloadController extends ChangeNotifier {
       notifyListeners();
       await _persistDownloads();
     } catch (error) {
+      if (_downloadAttempts[key] != attempt) return;
       _downloads[key] = DownloadEntry(
         song: song,
         quality: quality,
@@ -498,6 +579,68 @@ class DownloadController extends ChangeNotifier {
       );
       notifyListeners();
     }
+  }
+
+  Future<void> _acquireMetadataSlot() async {
+    if (_metadataRunning < 3) {
+      _metadataRunning++;
+      return;
+    }
+    final ready = Completer<void>();
+    _metadataWaiters.add(ready);
+    await ready.future;
+  }
+
+  void _releaseMetadataSlot() {
+    if (_metadataWaiters.isNotEmpty) {
+      _metadataWaiters.removeAt(0).complete();
+    } else {
+      _metadataRunning--;
+    }
+  }
+
+  Future<({Song song, String lyrics})> _prepareDownloadMetadata(
+    Song song,
+  ) async {
+    var enriched = song;
+    try {
+      final detail = await _api
+          .songDetail(song)
+          .timeout(const Duration(seconds: 6));
+      if (detail != null) {
+        enriched = Song(
+          id: song.id,
+          title: song.title,
+          artist: song.artist,
+          hash: song.hash,
+          albumId: detail.albumId ?? song.albumId,
+          albumAudioId: detail.albumAudioId ?? song.albumAudioId,
+          albumName: detail.albumName?.isNotEmpty == true
+              ? detail.albumName
+              : song.albumName,
+          coverUrl: detail.coverUrl?.isNotEmpty == true
+              ? detail.coverUrl
+              : song.coverUrl,
+          duration: detail.duration ?? song.duration,
+          releaseDate: detail.releaseDate ?? song.releaseDate,
+          artists: song.artists,
+          source: song.source,
+          isCloudDrive: song.isCloudDrive,
+        );
+      }
+    } catch (error) {
+      debugPrint('[Download] Could not enrich song metadata: $error');
+    }
+    var text = '';
+    try {
+      final lyrics = await _api
+          .lyrics(enriched)
+          .timeout(const Duration(seconds: 8));
+      text = downloadLyricsText(lyrics);
+    } catch (error) {
+      debugPrint('[Download] Could not fetch download lyrics: $error');
+    }
+    return (song: enriched, lyrics: text);
   }
 
   /// 移除一条失败记录（从失败列表清除）。
@@ -515,9 +658,10 @@ class DownloadController extends ChangeNotifier {
     final entry = _downloads[downloadKey];
     if (entry?.status != DownloadStatus.downloading) return;
     final transferKey = _service.cacheKeyFor(song, entry!.quality);
-    await _service.cancel(transferKey);
+    _downloadAttempts.remove(downloadKey);
     _downloads.remove(downloadKey);
     notifyListeners();
+    await _service.cancel(transferKey);
   }
 
   /// 删除单个已下载歌曲。

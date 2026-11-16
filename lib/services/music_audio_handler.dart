@@ -11,7 +11,8 @@ import '../models/music_models.dart';
 
 class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
-  MusicAudioHandler() {
+  MusicAudioHandler({AudioPlayer? player})
+    : audioPlayer = player ?? AudioPlayer(handleInterruptions: false) {
     // 注意：不能使用 .map(...).pipe(playbackState)。pipe 内部是常驻
     // addStream，期间任何外部 playbackState.add()（如 refreshMediaControls）
     // 都会抛 "Bad state: You cannot add items while items are being added
@@ -23,7 +24,7 @@ class MusicAudioHandler extends BaseAudioHandler
 
   // Interruption and disconnect policy belongs to PlayerController. Letting
   // just_audio resume independently can bypass a user pause or disconnect.
-  final AudioPlayer audioPlayer = AudioPlayer(handleInterruptions: false);
+  final AudioPlayer audioPlayer;
 
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;
@@ -42,7 +43,19 @@ class MusicAudioHandler extends BaseAudioHandler
   Song? get loadedSong => _sourceSong;
 
   void setBluetoothLyricsTitleSync(bool enabled) {
+    if (_bluetoothLyricsTitleSync == enabled) return;
     _bluetoothLyricsTitleSync = enabled;
+    final song = _currentSong;
+    final item = mediaItem.value;
+    if (song == null || item == null) return;
+    final lyric = item.extras?['currentLyric'] as String?;
+    mediaItem.add(
+      item.copyWith(
+        title: enabled && lyric != null && lyric.isNotEmpty
+            ? lyric
+            : song.title,
+      ),
+    );
   }
 
   void attachTransportControls({
@@ -178,7 +191,21 @@ class MusicAudioHandler extends BaseAudioHandler
     _queueIndex = queueIndex < 0 ? 0 : queueIndex;
     queue.add(queueSongs.map(_mediaItemFor).toList(growable: false));
     if (currentSong != null) {
-      mediaItem.add(_mediaItemFor(currentSong));
+      final previous = mediaItem.value;
+      final sameSong =
+          previous?.id ==
+          (currentSong.hash.isEmpty ? currentSong.id : currentSong.hash);
+      final extras = previous?.extras;
+      if (sameSong && extras?.containsKey('currentLyric') == true) {
+        updateLyricMetadata(
+          lyricText: extras!['currentLyric'] as String?,
+          translationText: extras['translationLyric'] as String?,
+          romanizationText: extras['romanLyric'] as String?,
+          fullLyricLrc: extras['full_lrc'] as String?,
+        );
+      } else {
+        mediaItem.add(_mediaItemFor(currentSong));
+      }
     }
   }
 
