@@ -73,4 +73,36 @@ void main() {
       expect(song.duration?.inMilliseconds, 210800);
     });
   });
+
+  group('Song.fromAlbum', () {
+    test('专辑接口缺少 album_audio_id 时不把音频 hash 当作播放 ID', () {
+      final song = Song.fromAlbum({
+        'base': {
+          'audio_name': 'Glamorous (Explicit)',
+          'author_name': '欧加',
+          'album_id': 163970508,
+        },
+        'audio_info': {
+          'hash': '3A6A895377B13F14211806D1B0CF0C1D',
+          'duration': 296000,
+        },
+        'album_info': {
+          'album_name': 'Glamorous',
+          'cover': 'http://imge.kugou.com/stdmusic/{size}/20251009/cover.jpg',
+        },
+        'authors': [
+          {'author_id': 17538707, 'author_name': '欧加'},
+        ],
+      });
+
+      expect(song.title, 'Glamorous (Explicit)');
+      expect(song.artist, '欧加');
+      expect(song.hash, '3A6A895377B13F14211806D1B0CF0C1D');
+      expect(song.id, song.hash);
+      expect(song.albumAudioId, isNull);
+      expect(song.albumId, '163970508');
+      expect(song.duration, const Duration(milliseconds: 296000));
+      expect(song.coverUrl, contains('/480/'));
+    });
+  });
 }
