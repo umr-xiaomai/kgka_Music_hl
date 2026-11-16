@@ -190,6 +190,8 @@ class PlayerController extends ChangeNotifier {
       'settings.resume_last_playlist_on_startup';
   static const _autoPlayOnDeviceConnectedSettingKey =
       'settings.auto_play_on_device_connected';
+  static const _autoPauseOnDeviceDisconnectSettingKey =
+      'settings.auto_pause_on_device_disconnect';
   static const _volumeNormalizationEnabledSettingKey =
       'settings.volume_normalization_enabled';
   static const _bluetoothLyricsEnabledSettingKey =
@@ -456,12 +458,22 @@ class PlayerController extends ChangeNotifier {
   bool audioInterruptionEnabled = true;
   bool autoResumeAfterInterruption = true;
   bool autoPlayOnDeviceConnected = false;
+  /// 蓝牙/耳机断开（becomingNoisy）时是否立即停止播放，防止误外放。
+  ///
+  /// 默认 true（断开即停止，不再自动恢复）。关闭后回到旧行为：
+  /// 断开时依据 [autoResumeAfterInterruption] 决定是否恢复。
+  bool autoPauseOnDeviceDisconnect = true;
   bool volumeNormalizationEnabled = false;
   bool bluetoothLyricsEnabled = false;
   bool bluetoothLyricsTitleSyncEnabled = false;
   bool desktopLyricsEnabled = false;
   DesktopLyricsSettings desktopLyricsSettings = const DesktopLyricsSettings();
   Timer? _autoResumeTimer;
+  /// 进入打断/断连事件时播放器是否正在播放。
+  ///
+  /// 用于打断结束后只恢复「打断前本来就在播」的场景，避免把用户主动暂停
+  /// 误判成被打断、从而在电话等操作结束后自动恢复播放。
+  bool _wasPlayingAtInterruption = false;
   Duration? sleepTimerRemaining;
   Timer? _sleepTimer;
   DateTime? _sleepTimerEnd;
@@ -1157,6 +1169,15 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 开关蓝牙/耳机断开时是否立即停止播放（防误外放）。
+  Future<void> setAutoPauseOnDeviceDisconnect(bool enabled) async {
+    if (autoPauseOnDeviceDisconnect == enabled) return;
+    autoPauseOnDeviceDisconnect = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_autoPauseOnDeviceDisconnectSettingKey, enabled);
+    notifyListeners();
+  }
+
   /// 开关音量均衡功能。
   Future<void> setVolumeNormalizationEnabled(bool enabled) async {
     if (volumeNormalizationEnabled == enabled) return;
@@ -1689,7 +1710,9 @@ class PlayerController extends ChangeNotifier {
       await session.configure(_audioSessionConfiguration);
       _interruptionSub = session.interruptionEventStream.listen((event) {
         if (event.begin) {
-          // 打断开始：系统可能已自动暂停播放器。
+          // 打断开始：记录打断前是否在播放，供结束时决定是否恢复。
+          _wasPlayingAtInterruption = isPlaying;
+          // 系统可能已自动暂停播放器。
           // 若开启了"阻止打断"，立即恢复播放以对抗暂停。
           if (!audioInterruptionEnabled && isPlaying && currentSong != null) {
             _autoResumeTimer?.cancel();
@@ -1700,8 +1723,10 @@ class PlayerController extends ChangeNotifier {
             });
           }
         } else {
-          // 打断结束：若开启了"自动恢复"或"阻止打断"，恢复播放。
-          if ((autoResumeAfterInterruption || (!audioInterruptionEnabled)) &&
+          // 打断结束：仅当打断前本来就在播放时，才按策略恢复。
+          // 用户主动暂停时 _wasPlayingAtInterruption 为 false，不会误恢复。
+          if (_wasPlayingAtInterruption &&
+              (autoResumeAfterInterruption || (!audioInterruptionEnabled)) &&
               currentSong != null) {
             _autoResumeTimer?.cancel();
             _autoResumeTimer = Timer(const Duration(milliseconds: 500), () {
@@ -1713,6 +1738,16 @@ class PlayerController extends ChangeNotifier {
         }
       });
       _becomingNoisySub = session.becomingNoisyEventStream.listen((_) {
+        // 记录断连前是否在播放，供恢复逻辑判定。
+        _wasPlayingAtInterruption = isPlaying;
+        if (autoPauseOnDeviceDisconnect) {
+          // 蓝牙/耳机断开：立即停止播放，避免声音意外切到扬声器外放。
+          _autoResumeTimer?.cancel();
+          if (isPlaying && currentSong != null) {
+            unawaited(_audioHandler.pause());
+          }
+          return;
+        }
         if (!audioInterruptionEnabled) {
           // 阻止打断模式下忽略耳机拔出
           return;
@@ -2289,6 +2324,9 @@ class PlayerController extends ChangeNotifier {
     autoPlayOnDeviceConnected =
         prefs.getBool(_autoPlayOnDeviceConnectedSettingKey) ??
         autoPlayOnDeviceConnected;
+    autoPauseOnDeviceDisconnect =
+        prefs.getBool(_autoPauseOnDeviceDisconnectSettingKey) ??
+        autoPauseOnDeviceDisconnect;
     volumeNormalizationEnabled =
         prefs.getBool(_volumeNormalizationEnabledSettingKey) ??
         volumeNormalizationEnabled;
