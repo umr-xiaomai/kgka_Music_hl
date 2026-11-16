@@ -2,12 +2,19 @@ import 'dart:async';
 
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:kgka_music_hl/controllers/auth_controller.dart';
+import 'package:kgka_music_hl/controllers/download_controller.dart';
+import 'package:kgka_music_hl/controllers/local_music_controller.dart';
 import 'package:kgka_music_hl/controllers/player_controller.dart';
+import 'package:kgka_music_hl/controllers/theme_controller.dart';
 import 'package:kgka_music_hl/models/music_models.dart';
+import 'package:kgka_music_hl/services/cache_service.dart';
 import 'package:kgka_music_hl/services/music_api.dart';
 import 'package:kgka_music_hl/services/music_audio_handler.dart';
+import 'package:kgka_music_hl/ui/pages/home_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _Session extends Fake implements AudioSession {
@@ -162,9 +169,87 @@ class _Handler extends Fake implements MusicAudioHandler {
   }
 }
 
+class _Downloads extends Fake implements DownloadController {}
+
+class _LocalMusic extends Fake implements LocalMusicController {}
+
+class _HomePlayer extends ChangeNotifier implements PlayerController {
+  Song? requestedSong;
+  List<Song>? requestedQueue;
+  bool? requestedByUser;
+
+  @override
+  Future<void> get settingsRestored async {}
+  @override
+  bool get autoPlayOnStartupEnabled => true;
+  @override
+  bool get isPlaying => false;
+  @override
+  bool get isPersonalFmActive => false;
+  @override
+  bool get isLoadingPersonalFm => false;
+  @override
+  Song? get currentSong => null;
+  @override
+  DownloadController? get downloadController => null;
+  @override
+  Future<int> getPlaybackHistoryCount() async => 0;
+
+  @override
+  Future<void> playSong(
+    Song song, {
+    List<Song>? queue,
+    bool preservePersonalFmSession = false,
+    QueueOrigin? origin,
+    bool userInitiated = true,
+  }) async {
+    requestedSong = song;
+    requestedQueue = queue;
+    requestedByUser = userInitiated;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 class _Api extends Fake implements MusicApi {
   Completer<List<Song>>? recommendations;
   Completer<PlayUrl>? url;
+  Completer<DailyRecommend>? daily;
+
+  @override
+  Future<DailyRecommend> dailyRecommend() => daily!.future;
+  @override
+  Future<List<PlaylistSummary>> recommendedPlaylists({
+    int categoryId = 0,
+    int page = 1,
+  }) async => [];
+  @override
+  Future<List<AlbumShopItem>> albumShop({
+    int page = 1,
+    int pageSize = 30,
+  }) async => [];
+  @override
+  Future<List<Song>> topSongs({int type = 21608, int page = 1}) async => [];
+  @override
+  Future<List<TopAlbumItem>> topAlbums({
+    int page = 1,
+    int pageSize = 30,
+  }) async => [];
+  @override
+  Future<List<RecommendedSongCard>> recommendedSongCards() async => [];
+  @override
+  Future<List<Song>> fmSongs(
+    FmStation station, {
+    int offset = -1,
+    int size = 20,
+  }) async => [];
+  @override
+  Future<List<FmStation>> fmRecommendedStations() async => [];
+  @override
+  Future<List<FmClassGroup>> fmClassGroups() async => [];
+  @override
+  Future<Map<String, FmImage>> fmImages(List<String> fmids) async => {};
 
   @override
   Future<List<Song>> personalFm({
@@ -440,6 +525,59 @@ void main() {
     hash: 'LOCAL_B',
     source: SongSource.netease,
   );
+
+  testWidgets('home startup recommendation is marked as automatic', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = null;
+    final startupPlayer = _HomePlayer();
+    api.daily = Completer<DailyRecommend>();
+    final cache = CacheService();
+    final auth = AuthController(api, cache)..isRestoring = false;
+    final theme = ThemeController();
+    addTearDown(auth.dispose);
+    addTearDown(theme.dispose);
+    addTearDown(startupPlayer.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: HomePage(
+            api: api,
+            auth: auth,
+            player: startupPlayer,
+            cache: cache,
+            theme: theme,
+            downloads: _Downloads(),
+            localMusic: _LocalMusic(),
+          ),
+        ),
+      ),
+    );
+
+    api.daily!.complete(const DailyRecommend(title: '每日推荐', songs: [localA]));
+    await tester.pump();
+    // Run the real homepage's post-frame callback and Windows startup delay.
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(startupPlayer.requestedSong, same(localA));
+    expect(startupPlayer.requestedQueue, [localA]);
+    expect(startupPlayer.requestedByUser, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 2));
+  });
+
+  test('automatic song request after disconnect stays paused', () async {
+    await Future<void>.delayed(Duration.zero);
+    session.noisy.add(null);
+    await Future<void>.delayed(Duration.zero);
+    await player.playSong(localA, userInitiated: false);
+    expect(player.currentSong, same(localA));
+    expect(player.errorMessage, isNull);
+    expect(handler.audioPlayer.playing, isFalse);
+    expect(handler.automaticPlays, 0);
+
+    await player.playSong(localA);
+    expect(handler.audioPlayer.playing, isTrue);
+  });
 
   test('natural completion delay cannot unlock a later disconnect', () async {
     await Future<void>.delayed(Duration.zero);

@@ -197,7 +197,11 @@ class _HomePageState extends State<HomePage> {
         // 二次校验：等待期间用户可能已手动开始播放或关闭开关。
         if (!widget.player.autoPlayOnStartupEnabled) return;
         if (widget.player.isPlaying) return;
-        widget.player.playSong(songs.first, queue: List<Song>.of(songs));
+        widget.player.playSong(
+          songs.first,
+          queue: List<Song>.of(songs),
+          userInitiated: false,
+        );
       });
     });
   }
