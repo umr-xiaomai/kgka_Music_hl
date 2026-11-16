@@ -293,6 +293,7 @@ class PlayerController extends ChangeNotifier {
       }
       _syncListeningTimeTracker();
       _syncDesktopPlayState();
+      _syncBluetoothLyricsFromPosition();
       notifyListeners();
     });
     _processingStateSub = audioPlayer.processingStateStream.distinct().listen((
@@ -369,6 +370,7 @@ class PlayerController extends ChangeNotifier {
   Timer? _queueSaveTimer;
   Timer? _positionSaveTimer;
   Timer? _playCacheTimer;
+  Timer? _bluetoothAnnounceTimer;
   DateTime? _listenTimeStartedAt;
   Duration _pendingListenTime = Duration.zero;
 
@@ -716,7 +718,8 @@ class PlayerController extends ChangeNotifier {
     _lastSuperLyricIndex = -1;
     _lastSuperLyricPlaying = true;
     _lastBluetoothLyricIndex = -1;
-    _lastBluetoothPlaying = true;
+    // 新歌曲尚未起播，首个位置 tick 应能重新发布真实播放状态。
+    _lastBluetoothPlaying = false;
     _saveQueueState();
     _startPositionSaving();
     notifyListeners();
@@ -848,6 +851,9 @@ class PlayerController extends ChangeNotifier {
   Future<void> _startPlayback() async {
     await _audioSessionReady;
     await _audioHandler.play();
+    // 每次（重新）起播都刷新一次当前歌词元数据。车机重新连接、
+    // 应用重启恢复播放时，旧的 MediaSession/广播状态可能已失效。
+    _announceBluetoothLyrics();
   }
 
   /// 启动固定为“红心 Radio + 根据口味”的私人 FM 会话。
@@ -1204,7 +1210,7 @@ class PlayerController extends ChangeNotifier {
       _audioHandler.updateLyricMetadata(lyricText: null);
     } else if (enabled) {
       // 打开时立即推送一次当前状态
-      _pushBluetoothLyricForCurrentLine(force: true);
+      _announceBluetoothLyrics();
     }
     notifyListeners();
   }
@@ -1337,6 +1343,7 @@ class PlayerController extends ChangeNotifier {
         lyrics = lines;
         notifyListeners();
         _syncDesktopLyrics();
+        _announceBluetoothLyrics();
       }
       return;
     }
@@ -1358,6 +1365,7 @@ class PlayerController extends ChangeNotifier {
           lyrics = cached.data;
           notifyListeners();
           _syncDesktopLyrics();
+          _announceBluetoothLyrics();
         }
       } catch (_) {}
     }
@@ -1386,6 +1394,7 @@ class PlayerController extends ChangeNotifier {
     }
     if (currentSong?.hash == song.hash) {
       _syncDesktopLyrics();
+      _announceBluetoothLyrics();
     }
   }
 
@@ -1759,6 +1768,12 @@ class PlayerController extends ChangeNotifier {
                 }
               });
             }
+            if (hasNewAudioDevice) {
+              // 车机刚建立连接时接收端可能尚未注册完成：先主动刷新一次，
+              // 再延迟补发一次，避免第二次连接后一直收不到歌词（#161）。
+              _announceBluetoothLyrics();
+              _scheduleBluetoothLyricsAnnouncement();
+            }
           }
         }
         _previousDevices = devices;
@@ -1965,6 +1980,29 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
+  /// 强制重新发布当前歌曲的 MediaSession 歌词与播放状态。
+  ///
+  /// 播放/暂停状态和歌词行缓存只能避免重复广播，无法覆盖以下场景：
+  /// - 应用重启或恢复上次播放后，MediaSession 已被系统重建；
+  /// - 车机断开后重新连接，接收端重新注册广播；
+  /// - 用户重新打开「车载蓝牙歌词」开关。
+  ///
+  /// 这些场景必须忽略缓存，主动发送一次完整状态。
+  void _announceBluetoothLyrics() {
+    if (!bluetoothLyricsEnabled || currentSong == null) return;
+    _lastBluetoothLyricIndex = -1;
+    _pushBluetoothLyricForCurrentLine(force: true, forcePlayState: true);
+  }
+
+  /// 延迟补发歌词状态，等待车机端接收器完成注册。
+  void _scheduleBluetoothLyricsAnnouncement({
+    Duration delay = const Duration(milliseconds: 900),
+  }) {
+    if (!bluetoothLyricsEnabled || currentSong == null) return;
+    _bluetoothAnnounceTimer?.cancel();
+    _bluetoothAnnounceTimer = Timer(delay, _announceBluetoothLyrics);
+  }
+
   /// 推送当前行歌词到车载蓝牙（MediaSession extras + 系统广播）。
   ///
   /// - [force]：忽略行/状态缓存直接发送一次（用于用户刚打开开关时）
@@ -2135,6 +2173,12 @@ class PlayerController extends ChangeNotifier {
     }
     if (_isAppForeground == isForeground) return;
     _isAppForeground = isForeground;
+    if (isForeground) {
+      // 用户重新打开应用时，车机可能早已连接，不会再有 devicesStream 事件。
+      _scheduleBluetoothLyricsAnnouncement(
+        delay: const Duration(milliseconds: 300),
+      );
+    }
     if (desktopLyricsEnabled) {
       _desktopLyrics.setAppForeground(isForeground: isForeground);
       unawaited(_syncDesktopLyricsVisibility());
@@ -2731,6 +2775,7 @@ class PlayerController extends ChangeNotifier {
     _stopPositionSaving();
     _queueSaveTimer?.cancel();
     _playCacheTimer?.cancel();
+    _bluetoothAnnounceTimer?.cancel();
     _autoResumeTimer?.cancel();
     _sleepTimer?.cancel();
     _positionSub.cancel();
