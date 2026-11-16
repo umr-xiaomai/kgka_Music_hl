@@ -948,8 +948,9 @@ class PlayerController extends ChangeNotifier {
       return false;
     } finally {
       if (requestSerial == _personalFmRequestSerial) {
-        if (_pendingPlaybackIntent == intentSerial)
+        if (_pendingPlaybackIntent == intentSerial) {
           _pendingPlaybackIntent = null;
+        }
         _isLoadingPersonalFm = false;
         notifyListeners();
       }
@@ -3356,8 +3357,9 @@ class PlayerController extends ChangeNotifier {
       }
     } finally {
       if (requestSerial == _playRequestSerial) {
-        if (_pendingPlaybackIntent == intentSerial)
+        if (_pendingPlaybackIntent == intentSerial) {
           _pendingPlaybackIntent = null;
+        }
         isPreparing = false;
         notifyListeners();
       }
