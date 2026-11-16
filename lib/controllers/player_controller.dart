@@ -460,7 +460,8 @@ class PlayerController extends ChangeNotifier {
   bool autoPlayOnDeviceConnected = false;
   bool volumeNormalizationEnabled = false;
   bool bluetoothLyricsEnabled = false;
-  bool bluetoothLyricsTitleSyncEnabled = false;
+  // 普通蓝牙车机只读取 AVRCP 标题，不会读取手机上的歌词广播或 extras。
+  bool bluetoothLyricsTitleSyncEnabled = true;
   bool desktopLyricsEnabled = false;
   DesktopLyricsSettings desktopLyricsSettings = const DesktopLyricsSettings();
   Timer? _autoResumeTimer;
@@ -1177,19 +1178,23 @@ class PlayerController extends ChangeNotifier {
   bool get isBluetoothLyricsSupported =>
       BluetoothLyricsService.isSupportedPlatform;
 
-  /// 开关车载蓝牙歌词功能。
+  /// 开关向普通蓝牙车机同步歌词标题。
   Future<void> setBluetoothLyricsTitleSyncEnabled(bool enabled) async {
     if (bluetoothLyricsTitleSyncEnabled == enabled) return;
     bluetoothLyricsTitleSyncEnabled = enabled;
-    _audioHandler.setBluetoothLyricsTitleSync(enabled);
+    _audioHandler.setBluetoothLyricsTitleSync(bluetoothLyricsEnabled && enabled);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_bluetoothLyricsTitleSyncSettingKey, enabled);
+    _announceBluetoothLyrics();
     notifyListeners();
   }
 
   Future<void> setBluetoothLyricsEnabled(bool enabled) async {
     if (bluetoothLyricsEnabled == enabled) return;
     bluetoothLyricsEnabled = enabled;
+    _audioHandler.setBluetoothLyricsTitleSync(
+      enabled && bluetoothLyricsTitleSyncEnabled,
+    );
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_bluetoothLyricsEnabledSettingKey, enabled);
     // 关闭时，清理残留广播
@@ -2346,8 +2351,10 @@ class PlayerController extends ChangeNotifier {
       _lastStatsFlush = _pendingListenTime;
     }
     bluetoothLyricsTitleSyncEnabled =
-        prefs.getBool(_bluetoothLyricsTitleSyncSettingKey) ?? false;
-    _audioHandler.setBluetoothLyricsTitleSync(bluetoothLyricsTitleSyncEnabled);
+        prefs.getBool(_bluetoothLyricsTitleSyncSettingKey) ?? true;
+    _audioHandler.setBluetoothLyricsTitleSync(
+      bluetoothLyricsEnabled && bluetoothLyricsTitleSyncEnabled,
+    );
     playbackSpeed = prefs.getDouble(_playbackSpeedSettingKey) ?? playbackSpeed;
     desktopLyricsEnabled =
         prefs.getBool(_desktopLyricsEnabledSettingKey) ?? desktopLyricsEnabled;

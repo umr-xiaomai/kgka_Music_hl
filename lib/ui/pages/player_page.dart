@@ -747,7 +747,7 @@ class _LandscapeHeader extends StatelessWidget {
             title: '桌面歌词',
             subtitle: player.desktopLyricsEnabled ? '已开启' : '已关闭',
             onTap: () async {
-              Navigator.of(context).pop();
+              // 操作面板已关闭，不能再 pop 承载播放器的页面。
               await player.setDesktopLyricsEnabled(!player.desktopLyricsEnabled);
             },
           ),
@@ -1452,7 +1452,7 @@ class _TopBar extends StatelessWidget {
             title: '桌面歌词',
             isGrid: true,
             onTap: () async {
-              Navigator.of(context).pop();
+              // 操作面板已关闭，不能再 pop 承载播放器的页面。
               await player.setDesktopLyricsEnabled(!player.desktopLyricsEnabled);
             },
           ),

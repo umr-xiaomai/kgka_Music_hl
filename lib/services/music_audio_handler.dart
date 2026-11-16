@@ -11,7 +11,8 @@ import '../models/music_models.dart';
 
 class MusicAudioHandler extends BaseAudioHandler
     with QueueHandler, SeekHandler {
-  MusicAudioHandler() {
+  MusicAudioHandler({AudioPlayer? player})
+    : audioPlayer = player ?? AudioPlayer() {
     // 注意：不能使用 .map(...).pipe(playbackState)。pipe 内部是常驻
     // addStream，期间任何外部 playbackState.add()（如 refreshMediaControls）
     // 都会抛 "Bad state: You cannot add items while items are being added
@@ -21,7 +22,7 @@ class MusicAudioHandler extends BaseAudioHandler
     );
   }
 
-  final AudioPlayer audioPlayer = AudioPlayer();
+  final AudioPlayer audioPlayer;
 
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;
@@ -38,7 +39,19 @@ class MusicAudioHandler extends BaseAudioHandler
   Song? get loadedSong => _sourceSong;
 
   void setBluetoothLyricsTitleSync(bool enabled) {
+    if (_bluetoothLyricsTitleSync == enabled) return;
     _bluetoothLyricsTitleSync = enabled;
+    final song = _currentSong;
+    final item = mediaItem.value;
+    if (song == null || item == null) return;
+    final lyric = item.extras?['currentLyric'] as String?;
+    mediaItem.add(
+      item.copyWith(
+        title: enabled && lyric != null && lyric.isNotEmpty
+            ? lyric
+            : song.title,
+      ),
+    );
   }
 
   void attachTransportControls({
@@ -94,7 +107,8 @@ class MusicAudioHandler extends BaseAudioHandler
   void refreshMediaControls() {
     if (_isFavoriteProvider == null) return;
     final song = _currentSong;
-    final signature = '${song?.hash ?? ''}|${song != null && _isFavoriteProvider!()}';
+    final signature =
+        '${song?.hash ?? ''}|${song != null && _isFavoriteProvider!()}';
     if (signature == _lastFavoriteSignature) return;
     _lastFavoriteSignature = signature;
     playbackState.add(_playbackStateForEvent(audioPlayer.playbackEvent));
@@ -118,7 +132,10 @@ class MusicAudioHandler extends BaseAudioHandler
 
   /// 系统媒体通知自定义动作入口（收藏按钮经由 audio_service 转发到此）。
   @override
-  Future<dynamic> customAction(String name, [Map<String, dynamic>? extras]) async {
+  Future<dynamic> customAction(
+    String name, [
+    Map<String, dynamic>? extras,
+  ]) async {
     if (name == _favoriteActionName) {
       await _onFavorite?.call();
     }
@@ -164,7 +181,21 @@ class MusicAudioHandler extends BaseAudioHandler
     _queueIndex = queueIndex < 0 ? 0 : queueIndex;
     queue.add(queueSongs.map(_mediaItemFor).toList(growable: false));
     if (currentSong != null) {
-      mediaItem.add(_mediaItemFor(currentSong));
+      final previous = mediaItem.value;
+      final sameSong =
+          previous?.id ==
+          (currentSong.hash.isEmpty ? currentSong.id : currentSong.hash);
+      final extras = previous?.extras;
+      if (sameSong && extras?.containsKey('currentLyric') == true) {
+        updateLyricMetadata(
+          lyricText: extras!['currentLyric'] as String?,
+          translationText: extras['translationLyric'] as String?,
+          romanizationText: extras['romanLyric'] as String?,
+          fullLyricLrc: extras['full_lrc'] as String?,
+        );
+      } else {
+        mediaItem.add(_mediaItemFor(currentSong));
+      }
     }
   }
 
@@ -210,12 +241,14 @@ class MusicAudioHandler extends BaseAudioHandler
       if (translationText != null) 'translationLyric': translationText,
       if (romanizationText != null) 'romanLyric': romanizationText,
       if (fullLyricLrc != null) 'full_lrc': fullLyricLrc,
-      if (fullLyricLrc != null) 'org.akanework.lyricinfo.FULL_LYRICS': fullLyricLrc,
+      if (fullLyricLrc != null)
+        'org.akanework.lyricinfo.FULL_LYRICS': fullLyricLrc,
       if (lyricText != null) 'org.akanework.lyricinfo.CURRENT_LYRIC': lyricText,
       if (lyricInfoJson != null) 'lyricInfo': lyricInfoJson,
     };
 
-    final title = (_bluetoothLyricsTitleSync && lyricText != null && lyricText.isNotEmpty)
+    final title =
+        (_bluetoothLyricsTitleSync && lyricText != null && lyricText.isNotEmpty)
         ? lyricText
         : song.title;
 
@@ -260,7 +293,9 @@ class MusicAudioHandler extends BaseAudioHandler
             final session = await AudioSession.instance;
             await session.setActive(true);
           } catch (e) {
-            debugPrint('[KA Music][playback] audio session setActive failed: $e');
+            debugPrint(
+              '[KA Music][playback] audio session setActive failed: $e',
+            );
           }
         }
         if (sessionId != _playSessionId) return;
@@ -308,7 +343,6 @@ class MusicAudioHandler extends BaseAudioHandler
     if (sessionId == _playSessionId) {
       throw StateError('无法自动开始播放：${lastError ?? '未知错误'}');
     }
-
   }
 
   @override
@@ -316,8 +350,6 @@ class MusicAudioHandler extends BaseAudioHandler
     _playSessionId++;
     await audioPlayer.pause();
   }
-
-
 
   @override
   Future<void> seek(Duration position) async {

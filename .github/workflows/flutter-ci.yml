@@ -45,6 +45,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # Keep the SDK compatible with the checked-in Gradle/AGP toolchain.
+          flutter-version: '3.47.2'
           cache: true
 
       - name: Disable analytics

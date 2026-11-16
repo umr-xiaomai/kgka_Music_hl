@@ -7,7 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'id3_tag_writer.dart';
+import 'download_metadata_writer.dart';
+import 'audio_file_format.dart';
 
 import '../config/app_config.dart';
 import '../models/music_models.dart';
@@ -292,24 +293,38 @@ class DownloadService {
         await partFile.rename(targetPath);
       }
 
-      // 下载完成后自动注入 ID3 标签、封面与元数据（MP3 格式）
-      if (task.kind == DownloadTaskKind.download && targetPath.endsWith('.mp3')) {
-        unawaited(
-          Id3TagWriter.injectMetadata(
-            filePath: targetPath,
-            song: task.song,
-          ).catchError((e) {
-            debugPrint('[Download] inject ID3 metadata failed: $e');
-            return false;
-          }),
-        );
+      // A server may downgrade the requested quality. Match the extension to
+      // the actual codec so other players choose the correct metadata parser.
+      final format = await inspectAudioFile(targetPath);
+      final extension = switch (format.format) {
+        AudioFileFormat.mp3 => '.mp3',
+        AudioFileFormat.flac => '.flac',
+        AudioFileFormat.unsupported => null,
+      };
+      if (extension != null && !targetPath.endsWith(extension)) {
+        final corrected = targetPath.substring(0, targetPath.lastIndexOf('.')) + extension;
+        await File(targetPath).rename(corrected);
+        return corrected;
       }
-
       return targetPath;
     } finally {
       _cancelTokens.remove(key);
     }
   }
+
+  /// User downloads await this step before becoming visible as completed.
+  /// Playback cache files remain untouched and do not fetch metadata or lyrics.
+  Future<DownloadMetadataResult> writeDownloadMetadata({
+    required String filePath,
+    required Song song,
+    String? lyricsText,
+    bool saveLyricsFile = false,
+  }) => DownloadMetadataWriter.write(
+    filePath: filePath,
+    song: song,
+    lyricsText: lyricsText,
+    saveLyricsFile: saveLyricsFile,
+  );
 
   /// 取消下载/缓存任务。
   Future<void> cancel(String cacheKey) async {
@@ -325,6 +340,8 @@ class DownloadService {
     if (file.existsSync()) {
       await file.delete();
     }
+    final sidecar = File(DownloadMetadataWriter.lyricsFilePath(path));
+    if (await sidecar.exists()) await sidecar.delete();
   }
 
   /// 获取文件大小（字节），不存在返回 0。

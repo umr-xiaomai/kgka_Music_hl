@@ -352,7 +352,7 @@ class SettingsPage extends StatelessWidget {
                         icon: Icons.directions_car_rounded,
                         iconColor: colorScheme.primary,
                         title: '车载蓝牙歌词',
-                        subtitle: '将实时歌词推送到车机或第三方车载歌词 App 显示',
+                        subtitle: '通过蓝牙媒体标题同步实时歌词，也支持车载歌词 App',
                         value: player.bluetoothLyricsEnabled,
                         onChanged: player.setBluetoothLyricsEnabled,
                       ),
@@ -361,8 +361,8 @@ class SettingsPage extends StatelessWidget {
                         _SettingsSwitchTile(
                           icon: Icons.watch_rounded,
                           iconColor: colorScheme.primary,
-                          title: '手环 / AVRCP 歌词同步',
-                          subtitle: '将实时歌词同步为媒体标题，供手环、手表与车机仪表盘显示',
+                          title: '蓝牙标题显示歌词',
+                          subtitle: '普通车机、手环需开启；关闭后媒体标题显示歌名',
                           value: player.bluetoothLyricsTitleSyncEnabled,
                           onChanged: player.setBluetoothLyricsTitleSyncEnabled,
                         ),
@@ -1160,6 +1160,17 @@ class _CacheManagementSheetState extends State<_CacheManagementSheet> {
               size: _formatSize(_downloadSize),
               onClear: null, // 下载文件用户主动管理，不提供一键清理
             ),
+            if (widget.downloads != null)
+              SwitchListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+                title: const Text('同时保存 LRC 歌词'),
+                subtitle: const Text('下载时保留独立歌词文件；内嵌失败时会自动保存'),
+                value: widget.downloads!.saveLyricsFile,
+                onChanged: (enabled) async {
+                  await widget.downloads!.setSaveLyricsFile(enabled);
+                  if (mounted) setState(() {});
+                },
+              ),
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
