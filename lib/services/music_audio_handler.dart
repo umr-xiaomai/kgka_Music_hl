@@ -21,10 +21,14 @@ class MusicAudioHandler extends BaseAudioHandler
     );
   }
 
-  final AudioPlayer audioPlayer = AudioPlayer();
+  // Interruption and disconnect policy belongs to PlayerController. Letting
+  // just_audio resume independently can bypass a user pause or disconnect.
+  final AudioPlayer audioPlayer = AudioPlayer(handleInterruptions: false);
 
   Future<void> Function()? _onNext;
   Future<void> Function()? _onPrevious;
+  void Function()? _onPause;
+  void Function()? _onPlay;
   int _queueIndex = 0;
   Song? _currentSong;
   Song? _sourceSong;
@@ -44,14 +48,20 @@ class MusicAudioHandler extends BaseAudioHandler
   void attachTransportControls({
     required Future<void> Function() onNext,
     required Future<void> Function() onPrevious,
+    void Function()? onPause,
+    void Function()? onPlay,
   }) {
     _onNext = onNext;
     _onPrevious = onPrevious;
+    _onPause = onPause;
+    _onPlay = onPlay;
   }
 
   void detachTransportControls() {
     _onNext = null;
     _onPrevious = null;
+    _onPause = null;
+    _onPlay = null;
   }
 
   /// 当前歌曲是否已收藏（null 表示未接入收藏能力）。
@@ -94,7 +104,8 @@ class MusicAudioHandler extends BaseAudioHandler
   void refreshMediaControls() {
     if (_isFavoriteProvider == null) return;
     final song = _currentSong;
-    final signature = '${song?.hash ?? ''}|${song != null && _isFavoriteProvider!()}';
+    final signature =
+        '${song?.hash ?? ''}|${song != null && _isFavoriteProvider!()}';
     if (signature == _lastFavoriteSignature) return;
     _lastFavoriteSignature = signature;
     playbackState.add(_playbackStateForEvent(audioPlayer.playbackEvent));
@@ -118,7 +129,10 @@ class MusicAudioHandler extends BaseAudioHandler
 
   /// 系统媒体通知自定义动作入口（收藏按钮经由 audio_service 转发到此）。
   @override
-  Future<dynamic> customAction(String name, [Map<String, dynamic>? extras]) async {
+  Future<dynamic> customAction(
+    String name, [
+    Map<String, dynamic>? extras,
+  ]) async {
     if (name == _favoriteActionName) {
       await _onFavorite?.call();
     }
@@ -210,12 +224,14 @@ class MusicAudioHandler extends BaseAudioHandler
       if (translationText != null) 'translationLyric': translationText,
       if (romanizationText != null) 'romanLyric': romanizationText,
       if (fullLyricLrc != null) 'full_lrc': fullLyricLrc,
-      if (fullLyricLrc != null) 'org.akanework.lyricinfo.FULL_LYRICS': fullLyricLrc,
+      if (fullLyricLrc != null)
+        'org.akanework.lyricinfo.FULL_LYRICS': fullLyricLrc,
       if (lyricText != null) 'org.akanework.lyricinfo.CURRENT_LYRIC': lyricText,
       if (lyricInfoJson != null) 'lyricInfo': lyricInfoJson,
     };
 
-    final title = (_bluetoothLyricsTitleSync && lyricText != null && lyricText.isNotEmpty)
+    final title =
+        (_bluetoothLyricsTitleSync && lyricText != null && lyricText.isNotEmpty)
         ? lyricText
         : song.title;
 
@@ -234,7 +250,8 @@ class MusicAudioHandler extends BaseAudioHandler
   int _playSessionId = 0;
 
   @override
-  Future<void> play() async {
+  Future<void> play({bool userInitiated = true}) async {
+    if (userInitiated) _onPlay?.call();
     final sessionId = ++_playSessionId;
     Object? lastError;
 
@@ -260,7 +277,9 @@ class MusicAudioHandler extends BaseAudioHandler
             final session = await AudioSession.instance;
             await session.setActive(true);
           } catch (e) {
-            debugPrint('[KA Music][playback] audio session setActive failed: $e');
+            debugPrint(
+              '[KA Music][playback] audio session setActive failed: $e',
+            );
           }
         }
         if (sessionId != _playSessionId) return;
@@ -308,16 +327,14 @@ class MusicAudioHandler extends BaseAudioHandler
     if (sessionId == _playSessionId) {
       throw StateError('无法自动开始播放：${lastError ?? '未知错误'}');
     }
-
   }
 
   @override
-  Future<void> pause() async {
+  Future<void> pause({bool userInitiated = true}) async {
+    if (userInitiated) _onPause?.call();
     _playSessionId++;
     await audioPlayer.pause();
   }
-
-
 
   @override
   Future<void> seek(Duration position) async {
@@ -336,6 +353,7 @@ class MusicAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> stop() async {
+    _onPause?.call();
     _playSessionId++;
     await audioPlayer.stop();
   }
