@@ -13,6 +13,7 @@ import '../../services/search_history_service.dart';
 import '../widgets/artwork.dart';
 import '../widgets/song_artwork.dart';
 import '../widgets/mini_player.dart';
+import '../widgets/favorite_button.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
@@ -673,7 +674,8 @@ class _SearchPageState extends State<SearchPage> {
               songs: _results,
               onPlay: _playSong,
               isLiked: (song) => widget.auth.isLiked(song),
-              onLikeTap: (song) => widget.auth.toggleLike(song),
+              onLikeTap: (song) =>
+                  FavoriteAction.toggle(context, widget.auth, song),
               auth: widget.auth,
               player: widget.player,
               onViewArtist: _openArtist,

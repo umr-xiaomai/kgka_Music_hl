@@ -59,8 +59,12 @@ class _Player extends Fake implements AudioPlayer {
   ProcessingState _processingState = ProcessingState.ready;
 
   void complete() {
-    _processingState = ProcessingState.completed;
-    processing.add(_processingState);
+    setProcessingState(ProcessingState.completed);
+  }
+
+  void setProcessingState(ProcessingState state) {
+    _processingState = state;
+    processing.add(state);
   }
 
   @override
@@ -105,6 +109,9 @@ class _Handler extends Fake implements MusicAudioHandler {
   int automaticPlays = 0;
   Completer<void>? sourceLoad;
   Completer<void>? pendingSeek;
+  Completer<void>? pendingPlay;
+  @override
+  Song? loadedSong;
 
   @override
   Future<void> loadSong({
@@ -114,12 +121,14 @@ class _Handler extends Fake implements MusicAudioHandler {
     required int queueIndex,
   }) async {
     await sourceLoad?.future;
-    audioPlayer._processingState = ProcessingState.ready;
+    loadedSong = song;
+    audioPlayer.setProcessingState(ProcessingState.ready);
   }
 
   @override
   Future<void> seek(Duration position) async {
     await pendingSeek?.future;
+    audioPlayer.setProcessingState(ProcessingState.ready);
   }
 
   @override
@@ -145,8 +154,6 @@ class _Handler extends Fake implements MusicAudioHandler {
     String? fullLyricLrc,
   }) {}
   @override
-  Song? get loadedSong => null;
-  @override
   Future<void> pause({bool userInitiated = true}) async {
     if (userInitiated) _onPause?.call();
     audioPlayer.setPlaying(false);
@@ -160,6 +167,7 @@ class _Handler extends Fake implements MusicAudioHandler {
       automaticPlays++;
     }
     audioPlayer.setPlaying(true);
+    await pendingPlay?.future;
   }
 
   @override
@@ -526,6 +534,91 @@ void main() {
     source: SongSource.netease,
   );
 
+  const localC = Song(
+    id: 'c',
+    title: 'C',
+    artist: 'Artist',
+    hash: 'LOCAL_C',
+    source: SongSource.netease,
+  );
+
+  test(
+    'a newer cutover restores the volume muted by an older request',
+    () async {
+      await player.playSong(localA, queue: [localA, localB, localC]);
+      await handler.audioPlayer.setVolume(.8);
+      handler.sourceLoad = Completer<void>();
+      final first = player.next();
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.audioPlayer.volume, 0);
+
+      // The outgoing song ends before the latest selection takes over.
+      handler.audioPlayer.complete();
+      final second = player.next();
+      handler.sourceLoad!.complete();
+      await Future.wait([first, second]);
+      expect(handler.loadedSong, same(localC));
+      expect(handler.audioPlayer.volume, .8);
+    },
+  );
+
+  test(
+    'switch mute and interruption ducking restore the base volume',
+    () async {
+      await player.playSong(localA, queue: [localA, localB]);
+      await handler.audioPlayer.setVolume(.8);
+      handler.sourceLoad = Completer<void>();
+      final switching = player.next();
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.audioPlayer.volume, 0);
+
+      session.interrupt(true, AudioInterruptionType.duck);
+      await Future<void>.delayed(Duration.zero);
+      handler.sourceLoad!.complete();
+      await switching;
+      expect(handler.audioPlayer.volume, .4);
+
+      session.interrupt(false, AudioInterruptionType.duck);
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.audioPlayer.volume, .8);
+    },
+  );
+
+  test(
+    'permanent interruption restores ducked volume without a gain event',
+    () async {
+      await player.playSong(localA);
+      await handler.audioPlayer.setVolume(.8);
+      session.interrupt(true, AudioInterruptionType.duck);
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.audioPlayer.volume, .4);
+
+      session.interrupt(true, AudioInterruptionType.unknown);
+      await Future<void>.delayed(Duration.zero);
+      expect(handler.audioPlayer.playing, isFalse);
+      expect(handler.audioPlayer.volume, .8);
+    },
+  );
+
+  test(
+    'consecutive completions advance after the previous start finishes',
+    () async {
+      await player.playSong(localA, queue: [localA, localB, localC]);
+      final starting = Completer<void>();
+      handler.pendingPlay = starting;
+      handler.audioPlayer.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(handler.loadedSong, same(localB));
+      handler.audioPlayer.complete();
+
+      handler.pendingPlay = null;
+      starting.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(handler.loadedSong, same(localC));
+      expect(handler.automaticPlays, 3);
+    },
+  );
+
   testWidgets('home startup recommendation is marked as automatic', (
     tester,
   ) async {
@@ -581,14 +674,13 @@ void main() {
 
   test('natural completion delay cannot unlock a later disconnect', () async {
     await Future<void>.delayed(Duration.zero);
-    player.currentSong = localA;
-    player.queue = [localA, localB];
-    handler.audioPlayer.setPlaying(true);
+    await player.playSong(localA, queue: [localA, localB]);
+    final baselinePlays = handler.automaticPlays;
     handler.audioPlayer.complete();
     session.noisy.add(null);
     await Future<void>.delayed(const Duration(milliseconds: 250));
     expect(handler.audioPlayer.playing, isFalse);
-    expect(handler.automaticPlays, 0);
+    expect(handler.automaticPlays, baselinePlays);
     await player.playSong(localB);
     expect(
       handler.audioPlayer.playing,
@@ -619,11 +711,10 @@ void main() {
     'single-loop seek cannot unlock a disconnect while it is pending',
     () async {
       await Future<void>.delayed(Duration.zero);
-      player.currentSong = localA;
-      player.queue = [localA];
+      await player.playSong(localA);
+      final baselinePlays = handler.automaticPlays;
       player.playbackMode = PlaybackMode.singleLoop;
       handler.pendingSeek = Completer<void>();
-      handler.audioPlayer.setPlaying(true);
       handler.audioPlayer.complete();
       await Future<void>.delayed(const Duration(milliseconds: 150));
       session.noisy.add(null);
@@ -631,7 +722,7 @@ void main() {
       handler.pendingSeek!.complete();
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(handler.audioPlayer.playing, isFalse);
-      expect(handler.automaticPlays, 0);
+      expect(handler.automaticPlays, baselinePlays);
     },
   );
 
@@ -667,6 +758,56 @@ void main() {
       expect(handler.automaticPlays, 0);
     },
   );
+
+  test('restoring a song releases a superseded switch mute', () async {
+    await player.playSong(localA, queue: [localA, localB, localC]);
+    await handler.audioPlayer.setVolume(.8);
+    final loading = Completer<void>();
+    handler.sourceLoad = loading;
+    final switching = player.next();
+    await Future<void>.delayed(Duration.zero);
+    expect(handler.audioPlayer.volume, 0);
+
+    final restoring = player.prepareRestoredSong(
+      autoPlay: true,
+      expectedSong: localB,
+    );
+    loading.complete();
+    await Future.wait([switching, restoring]);
+    expect(handler.loadedSong, same(localB));
+    expect(handler.audioPlayer.volume, .8);
+
+    handler.audioPlayer.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    expect(handler.loadedSong, same(localC));
+  });
+
+  test('a delayed quality reload preserves a later song selection', () async {
+    final networkSong = player.currentSong!;
+    const initialUrl = PlayUrl(
+      url: 'https://example.test/standard.mp3',
+      hash: 'HASH',
+    );
+    api.url = Completer<PlayUrl>()..complete(initialUrl);
+    await player.playSong(networkSong, queue: [networkSong, localB]);
+    final qualityUrl = Completer<PlayUrl>();
+    api.url = qualityUrl;
+    final reloading = player.setAudioQuality(
+      AudioQuality.high,
+      reloadCurrent: true,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(player.isPreparing, isTrue);
+
+    await player.next();
+    qualityUrl.complete(
+      const PlayUrl(url: 'https://example.test/high.mp3', hash: 'HASH'),
+    );
+    await reloading;
+    expect(player.currentSong, same(localB));
+    expect(handler.loadedSong, same(localB));
+    expect(handler.automaticPlays, 2);
+  });
 
   test(
     'quality reload does not resume after a disconnect during URL resolution',

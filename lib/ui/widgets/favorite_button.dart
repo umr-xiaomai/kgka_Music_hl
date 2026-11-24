@@ -16,7 +16,8 @@ class FavoriteAction {
   static bool isLiked(AuthController auth, Song song) => auth.isLiked(song);
 
   /// 是否允许操作：目前仅酷狗音源支持收藏。
-  static bool canToggle(Song song) => song.source == SongSource.kugou;
+  static bool canToggle(Song song) =>
+      song.source == SongSource.kugou && song.hash.trim().isNotEmpty;
 
   /// 执行收藏/取消收藏。
   ///
@@ -70,7 +71,8 @@ class FavoriteIconButton extends StatelessWidget {
       animation: auth,
       builder: (context, _) {
         final liked = FavoriteAction.isLiked(auth, song);
-        final enabled = FavoriteAction.canToggle(song);
+        final enabled =
+            FavoriteAction.canToggle(song) && !auth.isLikePending(song);
         return Tooltip(
           message: liked ? '取消收藏' : '收藏',
           child: IconButton(
@@ -115,7 +117,8 @@ class FavoriteBadge extends StatelessWidget {
       animation: auth,
       builder: (context, _) {
         final liked = FavoriteAction.isLiked(auth, song);
-        final enabled = FavoriteAction.canToggle(song);
+        final enabled =
+            FavoriteAction.canToggle(song) && !auth.isLikePending(song);
         return Tooltip(
           message: liked ? '取消收藏' : '收藏',
           child: Material(

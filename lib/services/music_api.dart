@@ -838,18 +838,80 @@ class MusicApi {
     return allSongs;
   }
 
+  /// Read every playlist row, including unavailable tracks and duplicates.
+  Future<List<Song>> playlistSongsForExport(String id) async {
+    const pageSize = 200;
+    final songs = <Song>[];
+    int? total;
+    int? initialVersion;
+    var page = 1;
+    while (true) {
+      final data = await _playlistTrackData(id, page: page, pageSize: pageSize);
+      final items = data['songs'];
+      final count = asInt(data['count']);
+      final offset = asInt(data['begin_idx']);
+      total ??= count;
+      if (page == 1) {
+        initialVersion = asInt(asMap(data['list_info'])['list_ver']);
+      }
+      if (items is! List ||
+          asInt(data['status']) == 0 ||
+          (asInt(data['error_code']) ?? 0) != 0 ||
+          (count != null && count != total) ||
+          (offset != null && offset != songs.length)) {
+        throw ApiException('歌单数据不完整，请重试');
+      }
+      for (final item in items) {
+        if (item is! Map<String, dynamic>) {
+          throw ApiException('歌单数据不完整，请重试');
+        }
+        songs.add(Song.fromPlaylist(item));
+      }
+      if (total != null) {
+        if (songs.length == total) break;
+        if (items.isEmpty || songs.length > total) {
+          throw ApiException('歌单数据不完整，请重试');
+        }
+      } else if (items.length < pageSize) {
+        break;
+      }
+      page++;
+    }
+
+    if (page > 1 && initialVersion != null) {
+      // Only the first page exposes the playlist version. Recheck it after
+      // paging to detect changes that leave the track count unchanged.
+      final data = await _playlistTrackData(id, page: 1, pageSize: 1);
+      final version = asInt(asMap(data['list_info'])['list_ver']);
+      final count = asInt(data['count']);
+      if (version != initialVersion ||
+          asInt(data['status']) == 0 ||
+          (asInt(data['error_code']) ?? 0) != 0 ||
+          (count != null && count != songs.length)) {
+        throw ApiException('导出期间歌单已变更，请重试');
+      }
+    }
+    return songs;
+  }
+
+  Future<Map<String, dynamic>> _playlistTrackData(
+    String id, {
+    required int page,
+    required int pageSize,
+  }) async => asMap(
+    await _client.get('/playlist/track/all', {
+      'id': id,
+      'page': page,
+      'pagesize': pageSize,
+    }),
+  );
+
   Future<SongPage> playlistSongPage(
     String id, {
     int page = 1,
     int pageSize = 80,
   }) async {
-    final json = asMap(
-      await _client.get('/playlist/track/all', {
-        'id': id,
-        'page': page,
-        'pagesize': pageSize,
-      }),
-    );
+    final json = await _playlistTrackData(id, page: page, pageSize: pageSize);
     final items = asList(json['songs']);
     final songs = items
         .whereType<Map<String, dynamic>>()
@@ -1005,7 +1067,9 @@ class MusicApi {
 
   void _checkPlaylistMutation(dynamic result) {
     final json = asMap(result);
-    if (asInt(json['status']) == 0 || json['success'] == false ||
+    if (asInt(json['status']) == 0 ||
+        json['success'] == false ||
+        (asInt(json['error_code']) ?? 0) != 0 ||
         (json['code'] != null && ![0, 200].contains(asInt(json['code'])))) {
       throw ApiException('歌单操作失败${_failureSuffix(json)}');
     }
@@ -1021,10 +1085,11 @@ class MusicApi {
         .where((id) => id.isNotEmpty)
         .join(',');
     if (fileIds.isEmpty) return;
-    await _client.post(
+    final result = await _client.post(
       '/playlist/tracks/del',
       query: {'listid': listId, 'fileids': fileIds},
     );
+    _checkPlaylistMutation(result);
   }
 
   Map<String, Object?> _songAddPayload(Song song) {
