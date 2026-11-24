@@ -25,6 +25,7 @@ import '../widgets/audio_quality_sheet.dart';
 import '../widgets/blurred_lyric_view.dart';
 import '../widgets/retryable_network_image.dart';
 import '../widgets/playback_speed_sheet.dart';
+import '../widgets/player_queue_view.dart';
 import '../widgets/sleep_timer_sheet.dart';
 import '../widgets/favorite_button.dart';
 import '../widgets/song_action_sheets.dart';
@@ -127,52 +128,13 @@ class _PlayerPageState extends State<PlayerPage> {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      builder: (context) {
-        return AnimatedBuilder(
-          animation: widget.player,
-          builder: (context, _) {
-            return ListView.builder(
-              itemCount: widget.player.queue.length,
-              itemBuilder: (context, index) {
-                final song = widget.player.queue[index];
-                final active = widget.player.currentSong?.hash == song.hash;
-                return ListTile(
-                  selected: active,
-                  leading: SongArtwork(song: song, size: 44),
-                  title: active
-                      ? MarqueeText(
-                          text: song.title,
-                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                                fontWeight: FontWeight.w700,
-                              ),
-                        )
-                      : Text(
-                          song.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                  subtitle: Text(
-                    song.artist,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: FavoriteIconButton(song: song, auth: widget.auth),
-                  onTap: () {
-                    Navigator.of(context).pop();
-                    widget.player.playSong(
-                      song,
-                      queue: widget.player.queue,
-                      preservePersonalFmSession:
-                          widget.player.isPersonalFmActive,
-                    );
-                  },
-                );
-              },
-            );
-          },
-        );
-      },
+      builder: (context) => SafeArea(
+        child: PlayerQueueView(
+          player: widget.player,
+          auth: widget.auth,
+          onSongSelected: () => Navigator.of(context).pop(),
+        ),
+      ),
     );
   }
 }
@@ -215,12 +177,27 @@ Future<void> _showAudioQualityPicker(
 }
 
 class _PlayerBodyState extends State<_PlayerBody> {
+  static const _posterPage = 0;
+  static const _queuePage = 1;
+  static const _lyricPage = 2;
+
   final _pageController = PageController();
   var _page = 0;
   var _pageScrolling = false;
   bool? _lastSystemUiLandscape;
 
-  bool get _lyricPageVisible => _page == 1 || _pageScrolling;
+  bool get _lyricPageVisible => _page == _lyricPage || _pageScrolling;
+
+  void _goToPage(int page) {
+    if (!_pageController.hasClients) return;
+    unawaited(
+      _pageController.animateToPage(
+        page,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -294,9 +271,23 @@ class _PlayerBodyState extends State<_PlayerBody> {
                                   ),
                                   player: widget.player,
                                   song: widget.song,
-                                  onQueue: widget.onQueue,
-                                  isPageVisible: _page == 0 || _pageScrolling,
+                                  onQueue: () => _goToPage(_queuePage),
+                                  isPageVisible:
+                                      _page == _posterPage || _pageScrolling,
                                   isWatch: isWatch,
+                                ),
+                                Theme(
+                                  data: ThemeData.dark(useMaterial3: true),
+                                  child: Material(
+                                    color: Colors.black.withValues(alpha: .35),
+                                    child: PlayerQueueView(
+                                      key: const PageStorageKey(
+                                        'player-queue-page',
+                                      ),
+                                      player: widget.player,
+                                      auth: widget.auth,
+                                    ),
+                                  ),
                                 ),
                                 _LyricPlayerPage(
                                   key: const PageStorageKey(
@@ -311,7 +302,12 @@ class _PlayerBodyState extends State<_PlayerBody> {
                             ),
                           ),
                   ),
-                  if (!isCarLayout) _PageDots(page: _page, compact: isWatch),
+                  if (!isCarLayout)
+                    _PageDots(
+                      page: _page,
+                      onSelected: _goToPage,
+                      compact: isWatch,
+                    ),
                 ],
               ),
             ),
@@ -339,18 +335,14 @@ class _PlayerBodyState extends State<_PlayerBody> {
   }
 
   bool _handlePageScrollNotification(ScrollNotification notification) {
-    if (notification.metrics.axis != Axis.horizontal) {
+    if (notification.depth != 0 || notification.metrics.axis != Axis.horizontal) {
       return false;
     }
 
     if (notification is ScrollStartNotification) {
       _setPageState(scrolling: true);
     } else if (notification is ScrollEndNotification) {
-      final page = (_pageController.page ?? _page.toDouble()).round().clamp(
-        0,
-        1,
-      );
-      _setPageState(page: page, scrolling: false);
+      _setPageState(scrolling: false);
     }
     return false;
   }
@@ -665,12 +657,14 @@ class _LandscapeHeader extends StatelessWidget {
                 ),
               ),
               _LandscapeHeaderButton(
-                tooltip: liked ? '取消喜欢' : '喜欢',
+                tooltip: liked ? '取消收藏' : '收藏',
                 size: compact ? 38 : 44,
                 iconSize: compact ? 22 : 24,
-                onPressed: song.source == SongSource.kugou
-                    ? () => auth.toggleLike(song)
+                onPressed:
+                    FavoriteAction.canToggle(song) && !auth.isLikePending(song)
+                    ? () => FavoriteAction.toggle(context, auth, song)
                     : null,
+                iconColor: liked ? Colors.redAccent : Colors.white,
                 icon: liked
                     ? Icons.favorite_rounded
                     : Icons.favorite_border_rounded,
@@ -774,6 +768,7 @@ class _LandscapeHeaderButton extends StatelessWidget {
     required this.iconSize,
     required this.onPressed,
     required this.icon,
+    this.iconColor = Colors.white,
   });
 
   final String tooltip;
@@ -781,6 +776,7 @@ class _LandscapeHeaderButton extends StatelessWidget {
   final double iconSize;
   final VoidCallback? onPressed;
   final IconData icon;
+  final Color iconColor;
 
   @override
   Widget build(BuildContext context) {
@@ -793,12 +789,16 @@ class _LandscapeHeaderButton extends StatelessWidget {
         child: SizedBox.square(
           dimension: size,
           child: IconButton(
-            color: Colors.white,
             iconSize: iconSize,
             padding: EdgeInsets.zero,
             constraints: BoxConstraints.tightFor(width: size, height: size),
             onPressed: onPressed,
-            icon: Icon(icon),
+            icon: Icon(
+              icon,
+              color: onPressed == null
+                  ? iconColor.withValues(alpha: .4)
+                  : iconColor,
+            ),
           ),
         ),
       ),
@@ -1371,11 +1371,13 @@ class _TopBar extends StatelessWidget {
                 ),
               ),
               _GlassIconButton(
-                tooltip: liked ? '取消喜欢' : '喜欢',
+                tooltip: liked ? '取消收藏' : '收藏',
                 size: buttonSize,
-                onPressed: song.source == SongSource.kugou
-                    ? () => auth.toggleLike(song)
+                onPressed:
+                    FavoriteAction.canToggle(song) && !auth.isLikePending(song)
+                    ? () => FavoriteAction.toggle(context, auth, song)
                     : null,
+                iconColor: liked ? Colors.redAccent : Colors.white,
                 icon: liked
                     ? Icons.favorite_rounded
                     : Icons.favorite_border_rounded,
@@ -2971,11 +2973,13 @@ class _GlassIconButton extends StatelessWidget {
     required this.onPressed,
     required this.icon,
     this.size,
+    this.iconColor = Colors.white,
   });
 
   final String tooltip;
   final VoidCallback? onPressed;
   final IconData icon;
+  final Color iconColor;
 
   /// 传入后按钮按此边长渲染（手表等极小屏使用）；
   /// 为空时保持 IconButton 的默认尺寸与点击热区。
@@ -2984,6 +2988,7 @@ class _GlassIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final buttonSize = size;
+    final color = onPressed == null ? iconColor.withValues(alpha: .4) : iconColor;
     if (buttonSize != null) {
       // IconButton 会补足 48dp 的最小点击热区，极小屏上会撑破布局，
       // 这里改用固定边长的 InkWell 自行控制尺寸。
@@ -2998,13 +3003,7 @@ class _GlassIconButton extends StatelessWidget {
             customBorder: const CircleBorder(),
             child: SizedBox.square(
               dimension: buttonSize,
-              child: Icon(
-                icon,
-                size: buttonSize * .62,
-                color: Colors.white.withValues(
-                  alpha: onPressed == null ? .4 : 1,
-                ),
-              ),
+              child: Icon(icon, size: buttonSize * .62, color: color),
             ),
           ),
         ),
@@ -3018,9 +3017,8 @@ class _GlassIconButton extends StatelessWidget {
         shape: const CircleBorder(),
         clipBehavior: Clip.antiAlias,
         child: IconButton(
-          color: Colors.white,
           onPressed: onPressed,
-          icon: Icon(icon),
+          icon: Icon(icon, color: color),
         ),
       ),
     );
@@ -3099,35 +3097,44 @@ class _CommentEntry extends StatelessWidget {
 }
 
 class _PageDots extends StatelessWidget {
-  const _PageDots({required this.page, this.compact = false});
+  const _PageDots({
+    required this.page,
+    required this.onSelected,
+    this.compact = false,
+  });
 
+  static const _labels = ['播放封面', '播放队列', '歌词'];
   final int page;
-
-  /// 手表等极小屏：缩小指示点与下边距，给内容多留几像素。
+  final ValueChanged<int> onSelected;
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final dotHeight = compact ? 5.0 : 7.0;
-    return Padding(
-      padding: EdgeInsets.only(bottom: compact ? 4 : 10),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: List.generate(2, (index) {
-          final active = index == page;
-          return AnimatedContainer(
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(_labels.length, (index) {
+        final active = index == page;
+        return IconButton(
+          tooltip: _labels[index],
+          isSelected: active,
+          onPressed: () => onSelected(index),
+          style: IconButton.styleFrom(
+            minimumSize: Size(compact ? 28 : 44, compact ? 20 : 30),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            padding: EdgeInsets.zero,
+          ),
+          icon: AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             width: active ? (compact ? 12.0 : 18.0) : dotHeight,
             height: dotHeight,
-            margin: EdgeInsets.symmetric(horizontal: compact ? 3 : 4),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: active ? .86 : .32),
               borderRadius: BorderRadius.circular(99),
             ),
-          );
-        }),
-      ),
+          ),
+        );
+      }),
     );
   }
 }
-

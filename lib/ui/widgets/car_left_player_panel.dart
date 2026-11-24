@@ -3,10 +3,10 @@ import '../design_tokens.dart';
 import '../../controllers/auth_controller.dart';
 import '../../controllers/player_controller.dart';
 import '../../controllers/theme_controller.dart';
-import '../../models/music_models.dart';
 import 'artwork.dart';
 import 'favorite_button.dart';
 import 'marquee_text.dart';
+import 'player_queue_view.dart';
 import 'toast.dart';
 
 class CarLeftPlayerPanel extends StatelessWidget {
@@ -169,8 +169,10 @@ class CarLeftPlayerPanel extends StatelessWidget {
                         ),
                       ),
                       IconButton(
-                        onPressed: song.source == SongSource.kugou
-                            ? () => auth.toggleLike(song)
+                        onPressed:
+                            FavoriteAction.canToggle(song) &&
+                                !auth.isLikePending(song)
+                            ? () => FavoriteAction.toggle(context, auth, song)
                             : null,
                         icon: Icon(
                           liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
@@ -381,125 +383,20 @@ class CarLeftPlayerPanel extends StatelessWidget {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      builder: (sheetContext) {
-        final colorScheme = Theme.of(sheetContext).colorScheme;
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Row(
-                    children: [
-                      Text(
-                        '播放队列',
-                        style: Theme.of(sheetContext)
-                            .textTheme
-                            .titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w900),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '${player.queue.length} 首',
-                        style: Theme.of(sheetContext).textTheme.bodyMedium?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                            ),
-                      ),
-                      const Spacer(),
-                      TextButton(
-                        onPressed: player.queue.length > 1
-                            ? () {
-                                final current = player.currentSong;
-                                if (current == null) return;
-                                Navigator.of(sheetContext).pop();
-                                player.playSong(current, queue: [current]);
-                                Toast.success('已清空播放队列');
-                              }
-                            : null,
-                        child: Text(
-                          '清空',
-                          style: TextStyle(color: colorScheme.error),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Flexible(
-                  child: AnimatedBuilder(
-                    animation: player,
-                    builder: (context, _) {
-                      if (player.queue.isEmpty) {
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 32),
-                          child: Center(
-                            child: Text(
-                              '播放队列为空',
-                              style: Theme.of(sheetContext)
-                                  .textTheme
-                                  .bodyMedium
-                                  ?.copyWith(
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
-                            ),
-                          ),
-                        );
-                      }
-                      return ListView.separated(
-                        shrinkWrap: true,
-                        itemCount: player.queue.length,
-                        separatorBuilder: (_, _) => const SizedBox(height: 2),
-                        itemBuilder: (context, index) {
-                          final song = player.queue[index];
-                          final active = player.currentSong?.hash == song.hash;
-                          return ListTile(
-                            selected: active,
-                            leading: Artwork(url: song.coverUrl, size: 40, borderRadius: 8),
-                            title: active
-                                ? MarqueeText(
-                                    text: song.title,
-                                    style: TextStyle(
-                                      color: colorScheme.primary,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  )
-                                : Text(
-                                    song.title,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                            subtitle: Text(song.artist),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                FavoriteIconButton(song: song, auth: auth),
-                                if (active)
-                                  Icon(
-                                    player.isPlaying
-                                        ? Icons.equalizer_rounded
-                                        : Icons.pause_rounded,
-                                    color: colorScheme.primary,
-                                  ),
-                              ],
-                            ),
-                            onTap: () {
-                              Navigator.of(sheetContext).pop();
-                              player.playSong(song, queue: player.queue);
-                            },
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+      builder: (sheetContext) => SafeArea(
+        child: PlayerQueueView(
+          player: player,
+          auth: auth,
+          onSongSelected: () => Navigator.of(sheetContext).pop(),
+          onClear: () {
+            final current = player.currentSong;
+            if (current == null) return;
+            Navigator.of(sheetContext).pop();
+            player.playSong(current, queue: [current]);
+            Toast.success('已清空播放队列');
+          },
+        ),
+      ),
     );
   }
 

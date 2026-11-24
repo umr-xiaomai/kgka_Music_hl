@@ -39,10 +39,24 @@ class AuthController extends ChangeNotifier {
   List<PlaylistSummary> playlists = const [];
 
   final Set<String> _likedHashes = {};
+  final Map<String, bool> _pendingLikes = {};
+  final Map<String, Song> _likedPlaylistTracks = {};
+  int _likeSessionGeneration = 0;
+  int _likedStateRevision = 0;
 
   bool get isLoggedIn => session?.isValid == true;
 
-  bool isLiked(Song song) => _likedHashes.contains(song.hash);
+  String _likedHash(Song song) => song.hash.trim().toLowerCase();
+
+  bool isLiked(Song song) {
+    if (song.source != SongSource.kugou) return false;
+    final hash = _likedHash(song);
+    return _pendingLikes[hash] ?? _likedHashes.contains(hash);
+  }
+
+  bool isLikePending(Song song) =>
+      song.source == SongSource.kugou &&
+      _pendingLikes.containsKey(_likedHash(song));
 
   int get likedCount {
     final playlist = likedPlaylist;
@@ -54,48 +68,88 @@ class AuthController extends ChangeNotifier {
 
   Future<void> toggleLike(Song song) async {
     final playlist = likedPlaylist;
-    if (playlist == null) return;
+    final hash = _likedHash(song);
+    if (!isLoggedIn ||
+        playlist == null ||
+        song.source != SongSource.kugou ||
+        hash.isEmpty ||
+        _pendingLikes.containsKey(hash)) {
+      return;
+    }
 
-    final liked = _likedHashes.contains(song.hash);
-    final targetListId = playlist.listId?.isNotEmpty == true
-        ? playlist.listId!
-        : playlist.id;
+    await _setLiked(playlist, song, liked: !_likedHashes.contains(hash));
+  }
+
+  Future<void> _setLiked(
+    PlaylistSummary playlist,
+    Song song, {
+    required bool liked,
+    Song? playlistTrack,
+  }) async {
+    final targetListId = _playlistListId(playlist);
+    final currentPlaylist = likedPlaylist;
+    if (!isLoggedIn ||
+        targetListId == null ||
+        currentPlaylist == null ||
+        _playlistListId(currentPlaylist) != targetListId) {
+      throw StateError('收藏列表已更改，请刷新后重试');
+    }
+    final hash = _likedHash(song);
+    if (_pendingLikes.containsKey(hash)) {
+      throw StateError('这首歌的收藏状态正在更新，请稍后重试');
+    }
+    final generation = _likeSessionGeneration;
+    _pendingLikes[hash] = liked;
+    notifyListeners();
     try {
-      if (liked) {
-        // 首页、搜索页和播放器中的 Song.id 通常是 mixsongid/songid，
-        // 而 /playlist/tracks/del 要求的是收藏歌单内的 fileid。
-        // 先按 hash 找到歌单返回的歌曲对象，避免把错误的 ID 当成 fileid。
-        final playlistSong = await _resolveLikedSongForRemoval(
-          playlist,
-          targetListId,
-          song,
-        );
+      if (generation != _likeSessionGeneration) return;
+      if (!liked) {
+        // 删除接口需要收藏歌单内的 fileid，播放器里的 song.id 可能是 mixsongid。
+        final playlistSong =
+            playlistTrack ??
+            _likedPlaylistTracks[hash] ??
+            await _resolveLikedSongForRemoval(playlist, targetListId, hash);
+        if (generation != _likeSessionGeneration) return;
         await _api.removeFromPlaylist(targetListId, playlistSong);
-        _likedHashes.remove(song.hash);
       } else {
         await _api.addToPlaylist(targetListId, song);
-        _likedHashes.add(song.hash);
       }
-      await _invalidatePlaylistDetailCache(playlist);
-      await _persistLikedHashes();
-      notifyListeners();
-    } catch (error) {
-      // Revert on failure
+      if (generation != _likeSessionGeneration) return;
+
+      _likedStateRevision++;
       if (liked) {
-        _likedHashes.add(song.hash);
+        if (hash.isNotEmpty) _likedHashes.add(hash);
       } else {
-        _likedHashes.remove(song.hash);
+        _likedHashes.remove(hash);
+        _likedPlaylistTracks.remove(hash);
       }
-      rethrow;
+      try {
+        await Future.wait([
+          _invalidatePlaylistDetailCache(playlist),
+          _persistLikedHashes(generation),
+        ]);
+      } catch (error) {
+        // 服务端已经更新成功，本地缓存失败时保留正确的收藏状态。
+        debugPrint('收藏缓存写入失败：$error');
+      }
+    } catch (_) {
+      if (generation == _likeSessionGeneration) {
+        if (!liked) _likedPlaylistTracks.remove(hash);
+        rethrow;
+      }
+    } finally {
+      if (generation == _likeSessionGeneration) {
+        _pendingLikes.remove(hash);
+        notifyListeners();
+      }
     }
   }
 
   Future<Song> _resolveLikedSongForRemoval(
     PlaylistSummary playlist,
     String targetListId,
-    Song sourceSong,
+    String hash,
   ) async {
-    final sourceHash = sourceSong.hash.trim().toLowerCase();
     final ids = <String>{playlist.id, targetListId}
       ..removeWhere((id) => id.isEmpty);
 
@@ -103,11 +157,7 @@ class AuthController extends ChangeNotifier {
       try {
         final songs = await _api.playlistSongs(id, fetchAll: true);
         for (final song in songs) {
-          final sameHash = sourceHash.isNotEmpty &&
-              song.hash.trim().toLowerCase() == sourceHash;
-          final sameId = sourceHash.isEmpty &&
-              (song.id == sourceSong.id || song.albumAudioId == sourceSong.id);
-          if ((sameHash || sameId) && song.id.isNotEmpty) {
+          if (_likedHash(song) == hash && _hasPlaylistFileId(song)) {
             return song;
           }
         }
@@ -118,6 +168,9 @@ class AuthController extends ChangeNotifier {
 
     throw StateError('未找到收藏歌单中的歌曲，请刷新收藏列表后重试');
   }
+
+  bool _hasPlaylistFileId(Song song) =>
+      song.id.isNotEmpty && song.id.toLowerCase() != _likedHash(song);
 
   Future<void> _invalidatePlaylistDetailCache(PlaylistSummary playlist) async {
     final ids = <String>{playlist.id, playlist.listId ?? ''}
@@ -221,14 +274,15 @@ class AuthController extends ChangeNotifier {
   Future<void> addSongToPlaylist(PlaylistSummary playlist, Song song) async {
     final listId = _playlistListId(playlist);
     if (listId == null) return;
+    final generation = _likeSessionGeneration;
     await _run(() async {
-      await _api.addToPlaylist(listId, song);
-      await _invalidatePlaylistDetailCache(playlist);
-      playlists = await _loadUserPlaylistsWithCache();
       if (playlist.isLikedPlaylist) {
-        _likedHashes.add(song.hash);
-        await _persistLikedHashes();
+        await _setLiked(playlist, song, liked: true);
+      } else {
+        await _api.addToPlaylist(listId, song);
+        await _invalidatePlaylistDetailCache(playlist);
       }
+      await _refreshPlaylistSummaries(generation);
     });
   }
 
@@ -239,14 +293,15 @@ class AuthController extends ChangeNotifier {
     final target = findUserPlaylist(playlist) ?? playlist;
     final listId = _playlistListId(target);
     if (listId == null) return;
+    final generation = _likeSessionGeneration;
     await _run(() async {
-      await _api.removeFromPlaylist(listId, song);
-      await _invalidatePlaylistDetailCache(target);
-      playlists = await _loadUserPlaylistsWithCache();
       if (target.isLikedPlaylist) {
-        _likedHashes.remove(song.hash);
-        await _persistLikedHashes();
+        await _setLiked(target, song, liked: false, playlistTrack: song);
+      } else {
+        await _api.removeFromPlaylist(listId, song);
+        await _invalidatePlaylistDetailCache(target);
       }
+      await _refreshPlaylistSummaries(generation);
     });
   }
 
@@ -371,10 +426,10 @@ class AuthController extends ChangeNotifier {
 
   Future<void> loginWithSession(LoginSession session) async {
     await _run(() async {
-      this.session = session;
-      _api.setSession(session);
+      _setLoginSession(session);
 
       final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_likedHashesKey);
       await prefs.setString(_tokenKey, session.token ?? '');
       await prefs.setString(_t1Key, session.t1 ?? '');
       // session.sessionId 可能为 null（扫码登录），但 ApiClient 内部
@@ -441,10 +496,10 @@ class AuthController extends ChangeNotifier {
         return;
       }
       final nextSession = result!.session!;
-      session = nextSession;
-      _api.setSession(nextSession);
+      _setLoginSession(nextSession);
 
       final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_likedHashesKey);
       await prefs.setString(_tokenKey, nextSession.token ?? '');
       await prefs.setString(_t1Key, nextSession.t1 ?? '');
       // nextSession.sessionId 可能为 null，用 ApiClient 实际持有的 session key
@@ -457,10 +512,20 @@ class AuthController extends ChangeNotifier {
     return result;
   }
 
+  void _setLoginSession(LoginSession nextSession) {
+    playlists = const [];
+    _clearLikedSongs();
+    session = nextSession;
+    _api.setSession(nextSession);
+    notifyListeners();
+  }
+
   Future<void> refreshVipInfo() async {
     if (!isLoggedIn) return;
+    final generation = _likeSessionGeneration;
     try {
       final latestVip = await _api.vipDetail();
+      if (generation != _likeSessionGeneration) return;
       vipInfo = latestVip;
       if (latestVip.userId != null &&
           latestVip.userId!.isNotEmpty &&
@@ -487,15 +552,24 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> refreshProfile({bool silent = false}) async {
+    final generation = _likeSessionGeneration;
     await _run(() async {
-      profile = await _api.userDetail();
-      if (profile != null) {
-        await _cacheService.write(_userCacheKey, profile!.toCache());
-      }
+      final latestProfile = await _api.userDetail();
+      if (generation != _likeSessionGeneration) return;
+      profile = latestProfile;
+      await _cacheService.write(_userCacheKey, latestProfile.toCache());
+      if (generation != _likeSessionGeneration) return;
       await refreshVipInfo();
-      playlists = await _loadUserPlaylistsWithCache();
+      await _refreshPlaylistSummaries(generation);
+      if (generation != _likeSessionGeneration) return;
       await _syncLikedSongs();
     }, silent: silent);
+  }
+
+  Future<void> _refreshPlaylistSummaries(int generation) async {
+    if (generation != _likeSessionGeneration) return;
+    final fetched = await _loadUserPlaylistsWithCache();
+    if (generation == _likeSessionGeneration) playlists = fetched;
   }
 
   Future<void> logout() async {
@@ -509,7 +583,7 @@ class AuthController extends ChangeNotifier {
         session = null;
         profile = null;
         playlists = const [];
-        _likedHashes.clear();
+        _clearLikedSongs();
         _api.setSession(null);
         await prefs.remove(_tokenKey);
         await prefs.remove(_t1Key);
@@ -526,21 +600,42 @@ class AuthController extends ChangeNotifier {
   Future<void> _syncLikedSongs() async {
     final playlist = likedPlaylist;
     if (playlist == null) return;
+    final revision = _likedStateRevision;
+    final generation = _likeSessionGeneration;
 
     try {
       final songs = await _api.playlistSongs(playlist.id, fetchAll: true);
-      _likedHashes.clear();
-      for (final song in songs) {
-        _likedHashes.add(song.hash);
+      // 较早开始的刷新不能覆盖之后已确认的操作或切换账号后的状态。
+      if (revision != _likedStateRevision ||
+          playlist.id != likedPlaylist?.id ||
+          playlist.listId != likedPlaylist?.listId) {
+        return;
       }
-      await _persistLikedHashes();
+      _likedHashes.clear();
+      _likedPlaylistTracks.clear();
+      for (final song in songs) {
+        final hash = _likedHash(song);
+        if (hash.isEmpty) continue;
+        _likedHashes.add(hash);
+        if (_hasPlaylistFileId(song)) _likedPlaylistTracks[hash] = song;
+      }
+      await _persistLikedHashes(generation);
     } catch (_) {
-      await _loadLikedHashes();
+      // 已恢复的缓存或当前内存中的收藏状态仍可用。
     }
   }
 
-  Future<void> _persistLikedHashes() async {
+  void _clearLikedSongs() {
+    _likeSessionGeneration++;
+    _likedStateRevision++;
+    _likedHashes.clear();
+    _likedPlaylistTracks.clear();
+    _pendingLikes.clear();
+  }
+
+  Future<void> _persistLikedHashes(int generation) async {
     final prefs = await SharedPreferences.getInstance();
+    if (generation != _likeSessionGeneration) return;
     await prefs.setString(_likedHashesKey, jsonEncode(_likedHashes.toList()));
   }
 
@@ -551,32 +646,44 @@ class AuthController extends ChangeNotifier {
     try {
       final list = jsonDecode(raw);
       if (list is List) {
-        _likedHashes.addAll(list.whereType<String>());
+        _likedHashes.addAll(
+          list
+              .whereType<String>()
+              .map((hash) => hash.trim().toLowerCase())
+              .where((hash) => hash.isNotEmpty),
+        );
       }
     } catch (_) {}
   }
 
   Future<List<PlaylistSummary>> _loadUserPlaylistsWithCache() async {
+    final generation = _likeSessionGeneration;
     final prefs = await SharedPreferences.getInstance();
+    if (generation != _likeSessionGeneration) return const [];
     final fetched = await _api.userPlaylists(pageSize: 100);
+    if (generation != _likeSessionGeneration) return const [];
 
     if (fetched.isNotEmpty) {
       await prefs.setInt(_playlistEmptyCountKey, 0);
+      if (generation != _likeSessionGeneration) return const [];
       await _saveCachedPlaylists(fetched);
       return fetched;
     }
 
     final emptyCount = (prefs.getInt(_playlistEmptyCountKey) ?? 0) + 1;
     await prefs.setInt(_playlistEmptyCountKey, emptyCount);
+    if (generation != _likeSessionGeneration) return const [];
 
     final cached = await _loadCachedPlaylists();
+    if (generation != _likeSessionGeneration) return const [];
     if (cached.isNotEmpty && emptyCount < 2) {
       return cached;
     }
 
     // 清理旧 key 与 CacheService 索引
+    final cacheKey = _playlistCacheKeyV2;
     await prefs.remove(_playlistCacheKey);
-    await _cacheService.remove(_playlistCacheKeyV2);
+    await _cacheService.remove(cacheKey);
     return const [];
   }
 
@@ -617,12 +724,13 @@ class AuthController extends ChangeNotifier {
 
   Future<void> _saveCachedPlaylists(List<PlaylistSummary> playlists) async {
     // 双写：CacheService（统一管理）+ 旧 key（兼容）
+    final legacyKey = _playlistCacheKey;
     await _cacheService.write(_playlistCacheKeyV2, {
       'playlists': playlists.map((p) => p.toCache()).toList(),
     });
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-      _playlistCacheKey,
+      legacyKey,
       jsonEncode(playlists.map((playlist) => playlist.toCache()).toList()),
     );
   }
@@ -648,7 +756,7 @@ class AuthController extends ChangeNotifier {
     profile = null;
     vipInfo = null;
     playlists = const [];
-    _likedHashes.clear();
+    _clearLikedSongs();
     _api.setSession(null);
     await prefs.remove(_tokenKey);
     await prefs.remove(_t1Key);
@@ -686,5 +794,11 @@ class AuthController extends ChangeNotifier {
       return error.message;
     }
     return error.toString();
+  }
+
+  @override
+  void dispose() {
+    _clearLikedSongs();
+    super.dispose();
   }
 }

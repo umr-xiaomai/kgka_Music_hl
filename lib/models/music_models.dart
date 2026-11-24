@@ -504,6 +504,24 @@ class Song {
 
   final List<ArtistRef> artists;
 
+  /// 判断队列项和列表里的曲目是否指向同一首歌。
+  bool matchesPlaybackTrack(Song other) {
+    if (identical(this, other)) return true;
+    if (source != other.source) return false;
+    if (hash.isNotEmpty && other.hash.isNotEmpty) {
+      return source == SongSource.kugou
+          ? hash.toLowerCase() == other.hash.toLowerCase()
+          : hash == other.hash;
+    }
+    final audioId = albumAudioId;
+    if (audioId != null &&
+        audioId.isNotEmpty &&
+        other.albumAudioId?.isNotEmpty == true) {
+      return audioId == other.albumAudioId;
+    }
+    return id.isNotEmpty && id == other.id;
+  }
+
   /// 标记是否为云盘歌曲。云盘歌曲的播放地址需通过 `/user/cloud/url` 获取。
   final bool isCloudDrive;
 

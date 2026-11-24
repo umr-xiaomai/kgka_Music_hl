@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../widgets/liquid_glass_ui.dart';
 import '../widgets/app_section.dart';
@@ -15,6 +16,7 @@ import '../../core/pinyin_utils.dart';
 import '../../models/music_models.dart';
 import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
+import '../../services/playlist_export.dart';
 import '../widgets/artwork.dart';
 import '../widgets/expandable_intro.dart';
 import '../widgets/favorite_button.dart';
@@ -26,6 +28,7 @@ import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
 import '../widgets/marquee_text.dart';
 import '../adaptive_layout.dart';
+import '../widgets/scroll_to_list_row.dart';
 import '../widgets/scroll_to_top_button.dart';
 import 'artist_detail_page.dart';
 
@@ -72,6 +75,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   String? _loadMoreError;
   List<PlaylistSummary> _similarPlaylists = const [];
   bool _isMutating = false;
+  bool _isExportingPlaylist = false;
   bool _isSearching = false;
   bool _isLoadingAllSongs = false;
   bool _isStartingPlayback = false;
@@ -87,8 +91,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   /// 自动定位当前播放歌曲相关状态。
   bool _autoLocateDone = false;
   bool _isLocating = false;
-  int? _locateTargetIndex;
-  final GlobalKey _locateRowKey = GlobalKey();
+  final _songListKey = GlobalKey();
 
   int get _selectedCount => _selectedHashes.length;
 
@@ -243,6 +246,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
+  Future<void>? _initialLoadFuture;
   Future<void>? _allSongsFuture;
   Future<List<Song>>? _entrySongsRefreshFuture;
 
@@ -269,7 +273,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   /// 每次进入歌单详情页只发起一次完整歌曲刷新；页面内所有播放操作复用结果。
   Future<List<Song>> _refreshSongsOnEntry() {
-    return _entrySongsRefreshFuture ??= _requestAllSongs().then(_uniqueSongs);
+    return _entrySongsRefreshFuture ??= _fetchEntrySongs();
+  }
+
+  Future<List<Song>> _fetchEntrySongs() async {
+    try {
+      return _uniqueSongs(await _requestAllSongs());
+    } catch (_) {
+      _entrySongsRefreshFuture = null;
+      rethrow;
+    }
   }
 
   /// 加载完整歌单（已加载/正在加载时复用同一个 Future）。
@@ -517,7 +530,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
-  Future<void> _loadInitial() async {
+  Future<void> _loadInitial() {
+    return _initialLoadFuture ??= _fetchInitial().whenComplete(() {
+      _initialLoadFuture = null;
+    });
+  }
+
+  Future<void> _fetchInitial() async {
     setState(() {
       _isInitialLoading = true;
       _isLoadingMore = false;
@@ -525,6 +544,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       _loadMoreError = null;
       _nextPage = 1;
       _hasMore = true;
+      _allSongsLoaded = false;
+      _autoLocateDone = false;
       _info = null;
       _albumDetail = null;
       _songs.clear();
@@ -740,113 +761,59 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
-  /// 打开页面时自动定位到当前播放的歌曲（滚动到其所在行）。
-  ///
-  /// 当前歌曲尚未加载（分页懒加载）时：若播放队列与当前歌单匹配
-  /// （已加载歌曲全部属于当前队列），逐页加载直到找到；否则不再额外请求，
-  /// 避免打开任意歌单都触发全量加载。
-  Future<void> _autoLocateCurrentSong() async {
-    if (_autoLocateDone || _isLocating) return;
-    final current = widget.player.currentSong;
+  /// 打开页面时保留自动定位，也允许随时重新定位到当前歌曲。
+  Future<void> _autoLocateCurrentSong() => _locateCurrentSong();
+
+  Future<void> _locateCurrentSong({bool userInitiated = false}) async {
+    if (_isLocating || (!userInitiated && _autoLocateDone)) return;
+    var current = widget.player.currentSong;
     if (current == null) return;
-    _isLocating = true;
+    final isLoaded = _songs.any(current.matchesPlaybackTrack);
+    if (!userInitiated && !isLoaded) return;
+
+    setState(() => _isLocating = true);
     try {
-      var index = _filteredSongs.indexWhere((s) => s.hash == current.hash);
-      if (index < 0 && _shouldSearchForCurrentSong(current)) {
-        // 逐页加载直到找到（上限 24 页，异常情况不再继续）
-        var pages = 0;
-        while (index < 0 &&
-            pages++ < 24 &&
-            _hasMore &&
-            _loadMoreError == null) {
-          await _loadMore();
-          if (!mounted) return;
-          index = _filteredSongs.indexWhere((s) => s.hash == current.hash);
+      if (!isLoaded) {
+        // 缓存可能缺少新加入的歌曲，先等进入页面时发起的刷新。
+        if (_initialLoadFuture case final refresh?) await refresh;
+        if (!mounted) return;
+        if (!_allSongsLoaded) await _loadAllSongs();
+        if (!mounted) return;
+        current = widget.player.currentSong;
+        if (current == null) return;
+      }
+      if (!_songs.any(current.matchesPlaybackTrack)) {
+        if (_allSongsLoaded) {
+          Toast.info('当前播放歌曲不在此歌单');
+        } else {
+          Toast.error('歌单加载失败，请重试');
         }
-      }
-      if (index >= 0 && mounted) {
-        _autoLocateDone = true;
-        await _scrollToSong(index);
-      }
-    } finally {
-      _isLocating = false;
-    }
-  }
-
-  /// 判断当前播放歌曲是否属于本歌单/专辑，需要向下翻页查找。
-  bool _shouldSearchForCurrentSong(Song current) {
-    if (_songs.isEmpty) return false;
-    // 专辑详情页：比对专辑 ID 或专辑名
-    if (_isAlbum) {
-      final targetAlbumId = widget.playlist.albumId ?? widget.playlist.id;
-      if (current.albumId != null && current.albumId == targetAlbumId) {
-        return true;
-      }
-      if (current.albumName != null &&
-          current.albumName!.isNotEmpty &&
-          current.albumName == widget.playlist.title) {
-        return true;
-      }
-    }
-    // 歌单详情页：若播放队列中包含当前歌曲且与歌单歌曲有交集
-    final queueHashes = widget.player.queue.map((s) => s.hash).toSet();
-    if (queueHashes.contains(current.hash)) {
-      if (_songs.any((s) => queueHashes.contains(s.hash))) {
-        return true;
-      }
-      final total = _info?.songCount ?? widget.playlist.songCount;
-      if (total != null && (total - widget.player.queue.length).abs() <= 10) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /// 滚动到展示列表中 [displayIndex] 所在行：先按固定行高估算偏移跳转，
-  /// 再用目标行 key 精确校正（兼容字体缩放等导致的估算误差）。
-  Future<void> _scrollToSong(int displayIndex) async {
-    if (displayIndex < 0 || displayIndex >= _filteredSongs.length) return;
-    if (!_scrollController.hasClients) {
-      // 等待首帧布局完成（内容刚加载完时 ScrollView 可能尚未 attach）
-      for (var i = 0; i < 20 && !_scrollController.hasClients && mounted; i++) {
-        await WidgetsBinding.instance.endOfFrame;
-      }
-      if (!mounted || !_scrollController.hasClients) return;
-    }
-
-    final topInset = MediaQuery.paddingOf(context).top;
-    const actionsHeight = 70.0;
-    const listTopPadding = 4.0;
-    const rowExtent = 72.0;
-    final collapseDelta = 198.0 - (kToolbarHeight + topInset);
-    final targetOffset = displayIndex == 0
-        ? 0.0
-        : (collapseDelta.clamp(0.0, 198.0) +
-              actionsHeight +
-              listTopPadding +
-              (displayIndex * rowExtent));
-
-    setState(() => _locateTargetIndex = displayIndex);
-
-    final position = _scrollController.position;
-    _scrollController.jumpTo(targetOffset.clamp(0.0, position.maxScrollExtent));
-
-    // 精确校正：定位行 key 一旦构建，用 ensureVisible 对齐到视口上 1/4 处。
-    for (var attempt = 0; attempt < 6; attempt++) {
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted) return;
-      final rowContext = _locateRowKey.currentContext;
-      if (rowContext != null && rowContext.mounted) {
-        await Scrollable.ensureVisible(
-          rowContext,
-          alignment: 0.25,
-          duration: const Duration(milliseconds: 220),
-        );
-        if (mounted) setState(() => _locateTargetIndex = null);
         return;
       }
+
+      if (userInitiated &&
+          _searchQuery.isNotEmpty &&
+          !_filteredSongs.any(current.matchesPlaybackTrack)) {
+        FocusScope.of(context).unfocus();
+        _toggleSearch();
+      }
+
+      // 首次加载和退出搜索都会改变列表布局，等布局更新后再读取偏移。
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+      current = widget.player.currentSong;
+      if (current == null) return;
+      final index = _filteredSongs.indexWhere(current.matchesPlaybackTrack);
+      if (scrollToListRow(
+        controller: _scrollController,
+        listKey: _songListKey,
+        index: index,
+      )) {
+        _autoLocateDone = true;
+      }
+    } finally {
+      if (mounted) setState(() => _isLocating = false);
     }
-    if (mounted) setState(() => _locateTargetIndex = null);
   }
 
   PlaylistSummary get _currentPlaylist => _info ?? widget.playlist;
@@ -986,8 +953,72 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     );
   }
 
-  /// 分享歌单：将歌单信息与歌曲列表复制到剪贴板。
-  void _sharePlaylist() {
+  Future<void> _sharePlaylist() async {
+    if (_isExportingPlaylist) return;
+    final action = await showModalBottomSheet<_PlaylistShareAction>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.save_alt_rounded),
+              title: const Text('导出完整歌单为 TXT'),
+              subtitle: const Text('按原顺序保存歌名、歌手和时长'),
+              onTap: () => Navigator.of(sheetContext).pop(
+                _PlaylistShareAction.exportTxt,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_rounded),
+              title: const Text('复制歌单到剪贴板'),
+              onTap: () =>
+                  Navigator.of(sheetContext).pop(_PlaylistShareAction.copy),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case _PlaylistShareAction.exportTxt:
+        await _exportPlaylist();
+      case _PlaylistShareAction.copy:
+        await _copyPlaylist();
+    }
+  }
+
+  Future<void> _exportPlaylist() async {
+    if (_isExportingPlaylist) return;
+    setState(() => _isExportingPlaylist = true);
+    final info = _currentPlaylist;
+    try {
+      Toast.info('正在准备完整歌单…');
+      final songs = _isStaticCollection
+          ? List<Song>.of(_songs)
+          : _isAlbum
+          ? await _requestAllSongs()
+          : await widget.api.playlistSongsForExport(widget.playlist.id);
+      if (!mounted) return;
+      final savedUri = await FilePicker.saveFile(
+        fileName: playlistExportFileName(info.title),
+        bytes: encodePlaylistExport(songs),
+        mimeType: 'text/plain',
+        dialogTitle: '导出歌单',
+      );
+      if (mounted && savedUri != null) {
+        Toast.success('已导出 ${songs.length} 首歌曲');
+      }
+    } catch (error) {
+      debugPrint('Playlist export failed: $error');
+      if (mounted) Toast.error('歌单导出失败，请重试');
+    } finally {
+      if (mounted) setState(() => _isExportingPlaylist = false);
+    }
+  }
+
+  Future<void> _copyPlaylist() async {
     final info = _currentPlaylist;
     final songs = _songs;
     final buffer = StringBuffer();
@@ -1001,8 +1032,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       final song = songs[i];
       buffer.writeln('${i + 1}. ${song.title} - ${song.artist}');
     }
-    Clipboard.setData(ClipboardData(text: buffer.toString()));
-    Toast.success('歌单信息已复制到剪贴板');
+    try {
+      await Clipboard.setData(ClipboardData(text: buffer.toString()));
+      if (mounted) Toast.success('歌单信息已复制到剪贴板');
+    } catch (_) {
+      if (mounted) Toast.error('复制歌单失败，可尝试导出 TXT');
+    }
   }
 
   /// 显示歌单操作 BottomSheet（收藏/删除/取消收藏）。
@@ -1183,6 +1218,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final visibleSongs = _filteredSongs;
 
     return LiquidGlassBackground(
       child: Scaffold(
@@ -1262,9 +1298,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                             icon: const Icon(Icons.search_rounded),
                           ),
                           IconButton(
-                            tooltip: '分享',
-                            onPressed: _sharePlaylist,
-                            icon: const Icon(Icons.share_rounded),
+                            tooltip: '分享与导出',
+                            onPressed: _isExportingPlaylist
+                                ? null
+                                : _sharePlaylist,
+                            icon: _isExportingPlaylist
+                                ? const SizedBox.square(
+                                    dimension: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.share_rounded),
                           ),
                           if (!widget.readOnly)
                             IconButton(
@@ -1359,16 +1404,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           loadedCount: _songs.length,
                           sortLabel: _sortModeLabel,
                           onSortTap: () => _showSortSheet(context),
-                          onPlay: _filteredSongs.isEmpty || _isStartingPlayback
+                          onPlay: visibleSongs.isEmpty || _isStartingPlayback
                               ? null
                               : _playAll,
                           searchQuery: _searchQuery,
                           searchResultCount: _searchQuery.isNotEmpty
-                              ? _filteredSongs.length
+                              ? visibleSongs.length
                               : null,
                           selectionMode: _selectionMode,
                           selectedCount: _selectedCount,
-                          onSelectTap: _filteredSongs.isEmpty
+                          onSelectTap: visibleSongs.isEmpty
                               ? null
                               : _enterSelectionMode,
                         ),
@@ -1380,39 +1425,37 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                             child: LinearProgressIndicator(minHeight: 2),
                           ),
                         )
-                      else if (_searchQuery.isNotEmpty &&
-                          _filteredSongs.isEmpty)
+                      else if (_searchQuery.isNotEmpty && visibleSongs.isEmpty)
                         const SliverToBoxAdapter(child: _SearchEmpty()),
-                      if (_filteredSongs.isNotEmpty) ...[
+                      if (visibleSongs.isNotEmpty) ...[
                         SliverPadding(
                           padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                          sliver: SliverList.separated(
-                            itemCount: _filteredSongs.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(height: 2),
+                          sliver: SliverPrototypeExtentList.builder(
+                            key: _songListKey,
+                            prototypeItem: const _SongRowPrototype(),
+                            itemCount: visibleSongs.length,
                             itemBuilder: (context, index) {
-                              final song = _filteredSongs[index];
-                              return _SongRow(
-                                key: _locateTargetIndex == index
-                                    ? _locateRowKey
-                                    : null,
-                                song: song,
-                                index: index + 1,
-                                player: widget.player,
-                                auth: widget.auth,
-                                canDelete: _canEdit,
-                                selectionMode: _selectionMode,
-                                selected: _selectedHashes.contains(song.hash),
-                                onToggleSelect: () =>
-                                    _toggleSongSelection(song),
-                                onTap: () async {
-                                  final queue = List<Song>.of(_filteredSongs);
-                                  if (queue.isEmpty) return;
-                                  await _playFromVisibleQueue(song, queue);
-                                },
-                                onAddToPlaylist: () => _addSongToPlaylist(song),
-                                onDelete: () => _removeSong(song),
-                                onViewArtist: () => _openArtist(song),
+                              final song = visibleSongs[index];
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 2),
+                                child: _SongRow(
+                                  song: song,
+                                  index: index + 1,
+                                  player: widget.player,
+                                  auth: widget.auth,
+                                  canDelete: _canEdit,
+                                  selectionMode: _selectionMode,
+                                  selected: _selectedHashes.contains(song.hash),
+                                  onToggleSelect: () =>
+                                      _toggleSongSelection(song),
+                                  onTap: () => _playFromVisibleQueue(
+                                    song,
+                                    List<Song>.of(visibleSongs),
+                                  ),
+                                  onAddToPlaylist: () => _addSongToPlaylist(song),
+                                  onDelete: () => _removeSong(song),
+                                  onViewArtist: () => _openArtist(song),
+                                ),
                               );
                             },
                           ),
@@ -1456,6 +1499,26 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       )
                     : MiniPlayer(player: widget.player, auth: widget.auth),
               ),
+              if (!_selectionMode && !_isInitialLoading && _errorMessage == null)
+                Positioned(
+                  left: 20,
+                  bottom: bottomInset + 18,
+                  child: ListenableBuilder(
+                    listenable: widget.player,
+                    builder: (context, _) {
+                      if (widget.player.currentSong == null) {
+                        return const SizedBox.shrink();
+                      }
+                      return IconButton.filledTonal(
+                        tooltip: '定位到当前歌曲',
+                        onPressed: _isLocating
+                            ? null
+                            : () => _locateCurrentSong(userInitiated: true),
+                        icon: const Icon(Icons.my_location_rounded),
+                      );
+                    },
+                  ),
+                ),
               AnimatedPositioned(
                 duration: const Duration(milliseconds: 220),
                 curve: Curves.easeOutCubic,
@@ -1979,9 +2042,37 @@ class _LoadMoreFooter extends StatelessWidget {
   }
 }
 
+// 以列表使用的字体和当前缩放比例测量行高，长歌单也能准确跳到指定行。
+class _SongRowPrototype extends StatelessWidget {
+  const _SongRowPrototype();
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 9, 0, 11),
+      child: Row(
+        children: [
+          const SizedBox(height: 50),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '曲目',
+                style: textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 3),
+              Text('歌手', style: textTheme.bodyMedium),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SongRow extends StatelessWidget {
   const _SongRow({
-    super.key,
     required this.song,
     required this.index,
     required this.player,
@@ -2018,7 +2109,7 @@ class _SongRow extends StatelessWidget {
       child: AnimatedBuilder(
         animation: player,
         builder: (context, _) {
-          final active = player.currentSong?.hash == song.hash;
+          final active = player.currentSong?.matchesPlaybackTrack(song) ?? false;
           final activeColor = colorScheme.primary;
           return InkWell(
             borderRadius: BorderRadius.circular(AppRadius.lg),
@@ -2353,6 +2444,8 @@ class _SelectionBar extends StatelessWidget {
 enum _SongSortMode { defaultOrder, byTitle, byArtist, byAlbum }
 
 enum _SongRemovalChoice { playlistOnly, playlistAndDownload }
+
+enum _PlaylistShareAction { exportTxt, copy }
 
 class _SortOptionTile extends StatelessWidget {
   const _SortOptionTile({

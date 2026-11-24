@@ -312,9 +312,7 @@ class PlayerController extends ChangeNotifier {
       state,
     ) {
       if (state == ProcessingState.completed) {
-        if (!_isChangingSource) {
-          unawaited(_handleCompleted());
-        }
+        _maybeHandleNativeCompletion();
       }
     });
     _androidAudioSessionSub = audioPlayer.androidAudioSessionIdStream.listen((
@@ -393,7 +391,7 @@ class PlayerController extends ChangeNotifier {
   int _seekSerial = 0;
   bool _isSeeking = false;
   bool _isScrubbing = false;
-  bool _isHandlingCompletion = false;
+  int? _handlingCompletionRequest;
   int _playRequestSerial = 0;
 
   /// 队列重建代次。
@@ -408,7 +406,7 @@ class PlayerController extends ChangeNotifier {
   bool _isPersonalFmActive = false;
   bool _isLoadingPersonalFm = false;
   int _personalFmRequestSerial = 0;
-  String? _completedSongHash;
+  int? _completedPlayRequest;
   bool _isAppForeground = true;
   bool _desktopLyricsPreviewVisible = false;
 
@@ -498,8 +496,10 @@ class PlayerController extends ChangeNotifier {
   int _autoResumeSerial = 0;
   int _playbackIntentSerial = 0;
   int? _pendingPlaybackIntent;
-  double? _volumeBeforeDuck;
-  double? _duckedVolume;
+  bool _isSwitchMuted = false;
+  bool _isDucking = false;
+  double? _volumeBeforeAttenuation;
+  double? _appliedAttenuation;
   Duration? sleepTimerRemaining;
   Timer? _sleepTimer;
   DateTime? _sleepTimerEnd;
@@ -688,8 +688,7 @@ class PlayerController extends ChangeNotifier {
   }) async {
     if (userInitiated) _handleManualPlay();
     final intentSerial = _playbackIntentSerial;
-    _pendingPlaybackIntent = intentSerial;
-    final requestSerial = ++_playRequestSerial;
+    final requestSerial = _beginSourceChange(playbackIntent: intentSerial);
     debugPrint(
       '[KA Music][playback] request=$requestSerial begin '
       'incomingQueue=${queue?.length ?? 0}',
@@ -708,28 +707,19 @@ class PlayerController extends ChangeNotifier {
     }
     _climaxEndTime = null;
     climax = null;
-    _completionFallbackTimer?.cancel();
     _playCacheTimer?.cancel();
     unawaited(downloadController?.cancelActivePlayCache());
-    _completedSongHash = null;
-    isPreparing = true;
-    _isChangingSource = true;
     errorMessage = null;
     final replacesQueue =
         queue != null && queue.isNotEmpty && !_isSameQueue(queue, this.queue);
     final previousSong = currentSong;
-    final wasPlaying =
-        isPlaying &&
+    if (previousSong != null &&
+        previousSong != song &&
+        audioPlayer.playing &&
         audioPlayer.processingState != ProcessingState.completed &&
-        !_isHandlingCompletion;
-    if (previousSong != null && previousSong != song) {
-      if (wasPlaying) {
-        // 用户手动切歌且旧音频正在播放时，仅静音旧音频，
-        // 避免网络解析加载期间继续外放，同时保持 Audio Focus 与 WakeLock 不中断；
-        // 绝不能在后台切歌或自然播完切歌时调用 pause()，否则会导致系统释放 WakeLock 并撤销 Audio Focus，
-        // 造成黑屏切歌卡住不播、必须点亮屏幕才恢复播放。
-        unawaited(audioPlayer.setVolume(0.0));
-      }
+        _handlingCompletionRequest == null) {
+      // 切歌时暂时静音，保留后台播放的音频焦点和 WakeLock。
+      unawaited(_setSwitchMuted(true));
     }
     currentSong = song;
     // 用户主动点歌/切歌后，磁盘上待恢复的进度不再适用
@@ -833,13 +823,16 @@ class PlayerController extends ChangeNotifier {
           'local=${networkUrl == null}',
         );
 
+        // 由当前请求解除静音，包括接管旧切歌请求时留下的静音。
+        await _setSwitchMuted(false);
+        if (requestSerial != _playRequestSerial) return;
         isPreparing = false;
         notifyListeners();
         unawaited(loadLyrics(song));
-        if (wasPlaying) {
-          unawaited(audioPlayer.setVolume(1.0));
-        }
-        await _startPlayback(expectedIntent: intentSerial);
+        await _startPlayback(
+          expectedIntent: intentSerial,
+          expectedRequest: requestSerial,
+        );
         if (requestSerial != _playRequestSerial) return;
         unawaited(_applyVolumeNormalization());
         unawaited(_applyEqualizer());
@@ -863,21 +856,30 @@ class PlayerController extends ChangeNotifier {
       debugPrint('[KA Music][playback] request=$requestSerial failed: $error');
       errorMessage = error.toString();
       unawaited(_audioHandler.pause());
-      if (wasPlaying) {
-        unawaited(audioPlayer.setVolume(1.0));
-      }
-      isPreparing = false;
       notifyListeners();
     } finally {
-      if (requestSerial == _playRequestSerial) {
-        _pendingPlaybackIntent = null;
-        _isChangingSource = false;
-        if (isPreparing) {
-          isPreparing = false;
-          notifyListeners();
-        }
-      }
+      _finishSourceChange(requestSerial);
     }
+  }
+
+  int _beginSourceChange({required int? playbackIntent}) {
+    _pendingPlaybackIntent = playbackIntent;
+    _completionFallbackTimer?.cancel();
+    isPreparing = true;
+    _isChangingSource = true;
+    return ++_playRequestSerial;
+  }
+
+  void _finishSourceChange(int requestSerial) {
+    if (requestSerial != _playRequestSerial) return;
+    _pendingPlaybackIntent = null;
+    _isChangingSource = false;
+    unawaited(_setSwitchMuted(false));
+    if (isPreparing) {
+      isPreparing = false;
+      notifyListeners();
+    }
+    _maybeHandleNativeCompletion();
   }
 
   Future<void> _serializeSourceChange(Future<void> Function() operation) async {
@@ -894,12 +896,14 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> _startPlayback({
     required int expectedIntent,
+    int? expectedRequest,
     bool allowDuringInterruption = false,
   }) async {
     await _audioSessionReady;
     // A disconnect may arrive while a song URL or source is still loading.
     // Only a later explicit play request may release this block.
-    if (expectedIntent != _playbackIntentSerial ||
+    if ((expectedRequest != null && expectedRequest != _playRequestSerial) ||
+        expectedIntent != _playbackIntentSerial ||
         _resumeBlockedByDisconnect ||
         (_interruptionRequiresPause &&
             audioInterruptionEnabled &&
@@ -1155,13 +1159,17 @@ class PlayerController extends ChangeNotifier {
       return;
     }
 
+    final requestSerial = _playRequestSerial;
     audioQuality = quality;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_audioQualitySettingKey, quality.apiValue);
     notifyListeners();
 
-    if (reloadCurrent && currentSong != null && !sameQuality) {
-      await _reloadCurrentSongForQuality();
+    if (reloadCurrent &&
+        !sameQuality &&
+        audioQuality == quality &&
+        _playRequestSerial == requestSerial) {
+      await _reloadCurrentSongForQuality(quality);
     }
   }
 
@@ -1491,6 +1499,7 @@ class PlayerController extends ChangeNotifier {
       final intentSerial = _playbackIntentSerial;
       if (audioPlayer.processingState == ProcessingState.completed) {
         await _audioHandler.seek(Duration.zero);
+        _completedPlayRequest = null;
       }
       await _startPlayback(expectedIntent: intentSerial);
     }
@@ -1596,6 +1605,9 @@ class PlayerController extends ChangeNotifier {
         return;
       }
       _setPositionBase(target, playing: isPlaying);
+      if (audioPlayer.processingState != ProcessingState.completed) {
+        _completedPlayRequest = null;
+      }
       notifyListeners();
     } finally {
       if (serial == _seekSerial) {
@@ -1636,12 +1648,29 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
+  void _maybeHandleNativeCompletion() {
+    if (audioPlayer.processingState == ProcessingState.completed) {
+      unawaited(_handleCompleted());
+    }
+  }
+
+  bool get _canHandleCompletion =>
+      !_isChangingSource &&
+      _handlingCompletionRequest != _playRequestSerial &&
+      _completedPlayRequest != _playRequestSerial &&
+      audioPlayer.playing &&
+      !_resumeBlockedByDisconnect &&
+      !(_interruptionRequiresPause && audioInterruptionEnabled) &&
+      currentSong != null &&
+      identical(_audioHandler.loadedSong, currentSong);
+
   Future<void> _handleCompleted() async {
-    if (_isHandlingCompletion || currentSong == null) return;
-    if (_completedSongHash == currentSong!.hash) return;
-    _isHandlingCompletion = true;
+    if (!_canHandleCompletion) return;
+    final requestSerial = _playRequestSerial;
+    final completedSong = currentSong;
+    _handlingCompletionRequest = requestSerial;
     _completionFallbackTimer?.cancel();
-    _completedSongHash = currentSong!.hash;
+    _completedPlayRequest = requestSerial;
     final intentSerial = _playbackIntentSerial;
 
     try {
@@ -1661,7 +1690,9 @@ class PlayerController extends ChangeNotifier {
       if (Platform.isWindows) {
         await Future<void>.delayed(const Duration(milliseconds: 100));
         // 延迟后重新检查状态，避免在延迟期间用户手动切歌
-        if (_completedSongHash != currentSong?.hash ||
+        if (requestSerial != _playRequestSerial ||
+            !identical(completedSong, currentSong) ||
+            _completedPlayRequest != requestSerial ||
             intentSerial != _playbackIntentSerial) {
           return;
         }
@@ -1673,8 +1704,12 @@ class PlayerController extends ChangeNotifier {
       }
 
       if (!_isPersonalFmActive && playbackMode == PlaybackMode.singleLoop) {
-        _completedSongHash = null;
         await _audioHandler.seek(Duration.zero);
+        if (requestSerial != _playRequestSerial ||
+            intentSerial != _playbackIntentSerial) {
+          return;
+        }
+        _completedPlayRequest = null;
         await _startPlayback(expectedIntent: intentSerial);
         return;
       }
@@ -1690,13 +1725,26 @@ class PlayerController extends ChangeNotifier {
         preservePersonalFmSession: _isPersonalFmActive,
         userInitiated: false,
       );
+    } catch (error) {
+      if (requestSerial == _playRequestSerial &&
+          intentSerial == _playbackIntentSerial) {
+        errorMessage = error.toString();
+        notifyListeners();
+      }
     } finally {
-      _isHandlingCompletion = false;
+      if (_handlingCompletionRequest == requestSerial) {
+        _handlingCompletionRequest = null;
+        // 短音源可能在起播确认完成前已经播完，补查当前音源的状态。
+        _maybeHandleNativeCompletion();
+      }
     }
   }
 
   void _maybeCompleteFromPosition(Duration value) {
-    if (_isSeeking || _isScrubbing || !isPlaying || duration <= Duration.zero) {
+    if (_isSeeking ||
+        _isScrubbing ||
+        !_canHandleCompletion ||
+        duration <= Duration.zero) {
       return;
     }
     if (audioPlayer.processingState == ProcessingState.completed) {
@@ -1709,8 +1757,18 @@ class PlayerController extends ChangeNotifier {
       final delay =
           (remaining > Duration.zero ? remaining : Duration.zero) +
           const Duration(milliseconds: 180);
+      final requestSerial = _playRequestSerial;
+      final intentSerial = _playbackIntentSerial;
+      final seekSerial = _seekSerial;
       _completionFallbackTimer = Timer(delay, () {
-        if (!isPlaying || _isSeeking || _isScrubbing) return;
+        if (_isSeeking ||
+            _isScrubbing ||
+            requestSerial != _playRequestSerial ||
+            intentSerial != _playbackIntentSerial ||
+            seekSerial != _seekSerial ||
+            audioPlayer.processingState != ProcessingState.ready) {
+          return;
+        }
         final currentPosition = audioPlayer.position;
         if (duration > Duration.zero &&
             duration - currentPosition <= const Duration(milliseconds: 220)) {
@@ -1720,24 +1778,31 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  Future<void> _reloadCurrentSongForQuality() async {
+  Future<void> _reloadCurrentSongForQuality(AudioQuality quality) async {
     final song = currentSong;
     if (song == null) {
       return;
     }
 
-    final resumePlayback = isPlaying;
     final intentSerial = _playbackIntentSerial;
-    if (resumePlayback) _pendingPlaybackIntent = intentSerial;
-    final targetPosition = smoothPosition;
-    isPreparing = true;
+    final resumePlayback =
+        audioPlayer.playing || _pendingPlaybackIntent == intentSerial;
+    final targetPosition =
+        _resumePosition ??
+        (identical(_audioHandler.loadedSong, song)
+            ? smoothPosition
+            : Duration.zero);
+    final requestSerial = _beginSourceChange(
+      playbackIntent: resumePlayback ? intentSerial : null,
+    );
     errorMessage = null;
     notifyListeners();
 
     try {
       String url;
       String? networkUrl;
-      final local = await downloadController?.localPathFor(song, audioQuality);
+      final local = await downloadController?.localPathFor(song, quality);
+      if (requestSerial != _playRequestSerial) return;
       if (local != null) {
         url = local;
       } else if (song.source == SongSource.local) {
@@ -1754,7 +1819,7 @@ class PlayerController extends ChangeNotifier {
         } else {
           playUrl = await _api.songUrl(
             song,
-            quality: audioQuality,
+            quality: quality,
             hashOnly: _isPersonalFmActive,
           );
         }
@@ -1764,28 +1829,41 @@ class PlayerController extends ChangeNotifier {
         url = playUrl.url;
         networkUrl = playUrl.url;
       }
-      await _audioHandler.loadSong(
-        song: song,
-        url: url,
-        queueSongs: queue,
-        queueIndex: currentIndex,
-      );
-      if (targetPosition > Duration.zero) {
-        await _audioHandler.seek(_clampPosition(targetPosition));
-      }
-      if (resumePlayback) {
-        await _startPlayback(expectedIntent: intentSerial);
-      }
-      // 切音质稳定播放后再后台缓存
-      if (networkUrl != null) {
-        _schedulePlayCache(song, audioQuality, networkUrl);
-      }
+      await _serializeSourceChange(() async {
+        if (requestSerial != _playRequestSerial) return;
+        await _audioHandler.loadSong(
+          song: song,
+          url: url,
+          queueSongs: queue,
+          queueIndex: currentIndex,
+        );
+        if (requestSerial != _playRequestSerial) return;
+        if (targetPosition > Duration.zero) {
+          await _audioHandler.seek(_clampPosition(targetPosition));
+          if (requestSerial != _playRequestSerial) return;
+        }
+        _resumePosition = null;
+        await _setSwitchMuted(false);
+        if (requestSerial != _playRequestSerial) return;
+        if (resumePlayback) {
+          await _startPlayback(
+            expectedIntent: intentSerial,
+            expectedRequest: requestSerial,
+          );
+          if (requestSerial != _playRequestSerial) return;
+        }
+        // 切音质稳定播放后再后台缓存
+        final cacheUrl = networkUrl;
+        if (cacheUrl != null) {
+          _schedulePlayCache(song, quality, cacheUrl);
+        }
+      });
     } catch (error) {
-      errorMessage = error.toString();
+      if (requestSerial == _playRequestSerial) {
+        errorMessage = error.toString();
+      }
     } finally {
-      if (_pendingPlaybackIntent == intentSerial) _pendingPlaybackIntent = null;
-      isPreparing = false;
-      notifyListeners();
+      _finishSourceChange(requestSerial);
     }
   }
 
@@ -1805,13 +1883,14 @@ class PlayerController extends ChangeNotifier {
           _isAudioInterrupted = true;
           // just_audio 的自动打断已关闭，duck 的音量恢复也由这里接管。
           if (event.type == AudioInterruptionType.duck) {
-            if (audioInterruptionEnabled && _volumeBeforeDuck == null) {
-              _volumeBeforeDuck = audioPlayer.volume;
-              _duckedVolume = audioPlayer.volume / 2;
-              unawaited(audioPlayer.setVolume(_duckedVolume!));
+            if (audioInterruptionEnabled && !_isDucking) {
+              _isDucking = true;
+              unawaited(_updateAttenuatedVolume());
             }
             return;
           }
+          // 音频焦点丢失可能没有单独的 duck 结束事件。
+          _restoreDuckedVolume();
           _interruptionRequiresPause = true;
           if (audioInterruptionEnabled) {
             unawaited(_audioHandler.pause(userInitiated: false));
@@ -1922,13 +2001,37 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _restoreDuckedVolume() {
-    final previous = _volumeBeforeDuck;
-    final ducked = _duckedVolume;
-    _volumeBeforeDuck = null;
-    _duckedVolume = null;
-    // 用户或切歌流程已经改变音量时，不用旧值覆盖新的选择。
-    if (previous != null && audioPlayer.volume == ducked) {
-      unawaited(audioPlayer.setVolume(previous));
+    if (!_isDucking) return;
+    _isDucking = false;
+    unawaited(_updateAttenuatedVolume());
+  }
+
+  Future<void> _setSwitchMuted(bool muted) async {
+    if (_isSwitchMuted == muted) return;
+    _isSwitchMuted = muted;
+    await _updateAttenuatedVolume();
+  }
+
+  Future<void> _updateAttenuatedVolume() async {
+    final current = audioPlayer.volume;
+    // 切歌静音和系统压低音量共用一个原值，避免把临时音量当作原值。
+    // 若外部已经修改音量，则采用新值。
+    final base = current == _appliedAttenuation
+        ? _volumeBeforeAttenuation!
+        : current;
+    final attenuation = _isSwitchMuted || _isDucking;
+    final target = _isSwitchMuted
+        ? 0.0
+        : _isDucking
+        ? base / 2
+        : base;
+    _volumeBeforeAttenuation = attenuation ? base : null;
+    _appliedAttenuation = attenuation ? target : null;
+    if (target == current) return;
+    try {
+      await audioPlayer.setVolume(target);
+    } catch (error) {
+      debugPrint('[KA Music][playback] set volume failed: $error');
     }
   }
 
@@ -1981,6 +2084,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> setAudioInterruptionEnabled(bool enabled) async {
     if (audioInterruptionEnabled == enabled) return;
     audioInterruptionEnabled = enabled;
+    if (!enabled) _restoreDuckedVolume();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_audioInterruptionEnabledSettingKey, enabled);
     // 设置变更后立即重新配置 AudioSession，使新策略生效
@@ -3341,9 +3445,10 @@ class PlayerController extends ChangeNotifier {
         (expectedSong != null && !identical(currentSong, expectedSong))) {
       return;
     }
-    final requestSerial = ++_playRequestSerial;
     final intentSerial = _playbackIntentSerial;
-    if (autoPlay) _pendingPlaybackIntent = intentSerial;
+    final requestSerial = _beginSourceChange(
+      playbackIntent: autoPlay ? intentSerial : null,
+    );
     debugPrint(
       '[KA Music][playback] restore-request=$requestSerial begin '
       'autoPlay=$autoPlay',
@@ -3354,8 +3459,6 @@ class PlayerController extends ChangeNotifier {
     // 在加载前保存恢复的进度（loadSong 会重置 position 为 0）。
     // 优先用磁盘上待应用的进度，其次才是内存中的 position。
     final restoredPosition = _resumePosition ?? position;
-
-    isPreparing = true;
     notifyListeners();
 
     try {
@@ -3397,8 +3500,13 @@ class PlayerController extends ChangeNotifier {
 
         unawaited(loadLyrics(song));
         _startPositionSaving();
+        await _setSwitchMuted(false);
+        if (requestSerial != _playRequestSerial) return;
         if (autoPlay) {
-          await _startPlayback(expectedIntent: intentSerial);
+          await _startPlayback(
+            expectedIntent: intentSerial,
+            expectedRequest: requestSerial,
+          );
           if (requestSerial != _playRequestSerial) return;
           // 记录播放历史与本地播放统计（后台执行，不阻塞播放）
           unawaited(_historyService.record(song));
@@ -3410,13 +3518,7 @@ class PlayerController extends ChangeNotifier {
         debugPrint('[KA Music] Failed to prepare restored song: $e');
       }
     } finally {
-      if (requestSerial == _playRequestSerial) {
-        if (_pendingPlaybackIntent == intentSerial) {
-          _pendingPlaybackIntent = null;
-        }
-        isPreparing = false;
-        notifyListeners();
-      }
+      _finishSourceChange(requestSerial);
     }
   }
 }

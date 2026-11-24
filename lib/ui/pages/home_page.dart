@@ -19,6 +19,7 @@ import '../../services/cache_service.dart';
 import '../../services/music_api.dart';
 import '../widgets/app_update_widgets.dart';
 import '../widgets/artwork.dart';
+import '../widgets/favorite_button.dart';
 import '../widgets/now_playing_badge.dart';
 import '../widgets/song_action_sheets.dart';
 import '../widgets/toast.dart';
@@ -703,7 +704,11 @@ class _HomePageState extends State<HomePage> {
                                     songs: data.daily.songs,
                                     onPlay: _playSong,
                                     isLiked: (song) => widget.auth.isLiked(song),
-                                    onLikeTap: (song) => widget.auth.toggleLike(song),
+                                    onLikeTap: (song) => FavoriteAction.toggle(
+                                      context,
+                                      widget.auth,
+                                      song,
+                                    ),
                                     auth: widget.auth,
                                     player: widget.player,
                                     onViewArtist: _openArtist,
